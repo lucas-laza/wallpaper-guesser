@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # Base de données MySQL
+  db:
+    image: mysql:8.0
+    container_name: wallpaper-guessr-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: wallpaper_guessr
+      MYSQL_USER: wallpaper_user
+      MYSQL_PASSWORD: wallpaper_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - wallpaper-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Service API principal
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: wallpaper-guessr-api
+    restart: unless-stopped
+    ports:
+      - "3300:3300"
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db
+      - WALLPAPER_SERVICE_URL=http://wallpaper:3301
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - shared_images:/app/dist/images
+      - ./countries.json:/app/countries.json:ro
+      - ./.env:/app/.env:ro
+    networks:
+      - wallpaper-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3300/health"]
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Service Wallpaper (scraping)
+  wallpaper:
+    build:
+      context: ./wallpaper
+      dockerfile: Dockerfile
+    container_name: wallpaper-guessr-wallpaper
+    restart: unless-stopped
+    ports:
+      - "3301:3301"
+    env_file:
+      - .env
+    environment:
+      - API_SERVICE_URL=http://api:3300
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - shared_images:/app/dist/images
+      - ./countries.json:/app/countries.json:ro
+      - ./.env:/app/.env:ro
+    networks:
+      - wallpaper-network
+
+networks:
+  wallpaper-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  shared_images:
