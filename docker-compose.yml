@@ -41,7 +41,6 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - shared_images:/app/dist/images
       - ./countries.json:/app/countries.json:ro
       - ./.env:/app/.env:ro
     networks:
@@ -71,7 +70,7 @@ services:
       api:
         condition: service_healthy
     volumes:
-      - shared_images:/app/dist/images
+      - wallpaper_images:/app/dist/images
       - ./countries.json:/app/countries.json:ro
       - ./.env:/app/.env:ro
     networks:
@@ -83,4 +82,4 @@ networks:
 
 volumes:
   mysql_data:
-  shared_images:
+  wallpaper_images:

@@ -18,9 +18,6 @@ COPY src/ ./src/
 # Compiler TypeScript
 RUN npm run build
 
-# Créer le dossier images
-RUN mkdir -p dist/images
-
 # Exposer le port
 EXPOSE 3300
 

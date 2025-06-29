@@ -12,6 +12,7 @@ import { Party } from "./Party";
 import { Round } from "./Round";
 import { WebSocketService } from "./WebSocketService";
 import { createServer } from 'http';
+import fetch from 'node-fetch';
 const cors = require('cors');
 
 dotenv.config();
@@ -62,7 +63,31 @@ async function main() {
 
   app.use(cors({ origin: '*' }));
   app.use(express.json());
-  app.use('/dist/images', express.static(path.join(__dirname, '..', 'dist', 'images')));
+  
+  // Proxy des images vers le service wallpaper
+  app.use('/dist/images', async (req, res) => {
+    try {
+      const wallpaperServiceUrl = process.env.WALLPAPER_SERVICE_URL || 'http://localhost:3301';
+      const imageUrl = `${wallpaperServiceUrl}${req.originalUrl}`;
+      
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        return res.status(404).json({ error: 'Image not found' });
+      }
+      
+      // Copier les headers de type de contenu
+      const contentType = response.headers.get('content-type');
+      if (contentType) {
+        res.set('Content-Type', contentType);
+      }
+      
+      // Streamer la réponse
+      response.body?.pipe(res);
+    } catch (error) {
+      console.error('Error proxying image:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
+  });
 
   const secretKey = process.env.JWT_SECRET;
   if (!secretKey) {
