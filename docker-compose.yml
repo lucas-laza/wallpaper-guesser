@@ -76,6 +76,26 @@ services:
     networks:
       - wallpaper-network
 
+  # Frontend React
+  front:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    container_name: wallpaper-guessr-front
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - wallpaper-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 networks:
   wallpaper-network:
     driver: bridge

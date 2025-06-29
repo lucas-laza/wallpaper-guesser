@@ -74,3 +74,12 @@ coverage/
 
 # Local development
 .local/
+
+# Vite build files
+front/dist/
+
+# React development
+front/.env.local
+front/.env.development.local
+front/.env.test.local
+front/.env.production.local
