@@ -7,6 +7,14 @@
 docker-compose up --build
 ```
 
+## Dev (local)
+
+1. Base de données : docker-compose up -d db
+2. Variables : cp .env.example .env pour chaque service
+3. Installation : npm install partout
+4. API/Wallpaper : npm run build && npm run start
+5. Frontend : npm run dev (hot reload)
+
 ## 🏗️ Architecture
 
 ### Structure des fichiers attendue
