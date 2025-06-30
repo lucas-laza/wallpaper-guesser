@@ -1,25 +1,38 @@
-# Dockerfile corrigé pour Vite
+# Dockerfile optimisé pour éviter les blocages npm
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Augmenter la mémoire Node.js
-ENV NODE_OPTIONS="--max_old_space_size=4096"
+# Configuration npm pour éviter les blocages
+ENV NPM_CONFIG_PROGRESS=false
+ENV NPM_CONFIG_LOGLEVEL=warn
+ENV NPM_CONFIG_AUDIT=false
+ENV NPM_CONFIG_FUND=false
+ENV CI=true
 
-# Copier package.json et package-lock.json séparément pour le cache
+# Mise à jour npm et nettoyage
+RUN npm install -g npm@latest && npm cache clean --force
+
+# Copier seulement package.json d'abord
 COPY package.json ./
+
+# Générer package-lock.json s'il n'existe pas
+RUN npm install --package-lock-only
+
+# Copier package-lock.json s'il existe
 COPY package-lock.json* ./
 
-# Installer TOUTES les dépendances (dev incluses) car Vite est en devDependencies
-RUN npm ci --timeout=300000 || npm install --timeout=300000
+# Installation avec options de robustesse
+RUN npm ci --prefer-offline --no-audit --no-fund --legacy-peer-deps || \
+    npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
 
 # Copier le reste du code
 COPY . .
 
-# Build avec Vite
+# Build
 RUN npm run build
 
-# Production stage avec Nginx
+# Production stage
 FROM nginx:alpine
 
 RUN apk add --no-cache curl
