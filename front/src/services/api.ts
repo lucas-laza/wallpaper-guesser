@@ -1,6 +1,9 @@
 // services/api.ts
 const API_BASE_URL = 'http://localhost:3300';
 
+// Variable globale pour stocker la fonction de déconnexion
+let logoutCallback: (() => void) | null = null;
+
 // Types
 export interface User {
   id: number;
@@ -104,7 +107,12 @@ export const removeUser = (): void => {
   localStorage.removeItem('user');
 };
 
-// API request helper
+// Fonction pour configurer l'intercepteur avec le callback de déconnexion
+export const setupApiInterceptor = (forceLogout: () => void) => {
+  logoutCallback = forceLogout;
+};
+
+// API request helper avec gestion automatique de l'expiration
 const apiRequest = async (endpoint: string, options: RequestInit = {}): Promise<any> => {
   const token = getToken();
   
@@ -117,14 +125,25 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}): Promise<
     ...options,
   };
 
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
-  
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || 'An error occurred');
-  }
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
+    
+    // Vérifier si c'est une erreur 401 (Unauthorized) et qu'on a un token
+    // Cela signifie que le token est expiré/invalide
+    if (response.status === 401 && token && logoutCallback) {
+      console.log('Token expiré/invalide. Déconnexion automatique...');
+      logoutCallback();
+    }
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'An error occurred');
+    }
 
-  return response.json();
+    return response.json();
+  } catch (error) {
+    throw error;
+  }
 };
 
 // Auth API calls
