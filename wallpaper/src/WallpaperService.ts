@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as https from 'https';
 import fetch from 'node-fetch';
 import * as dotenv from 'dotenv';
+import cron from 'node-cron';
 const cors = require('cors');
 
 dotenv.config();
@@ -259,6 +260,64 @@ app.post("/scrape/bulk", async (req, res) => {
     errors: errors.length,
     results,
     errorDetails: errors
+  });
+});
+
+// Variables de santé du cron
+let lastCronStatus = 'never';
+let lastCronTime: string | null = null;
+let lastCronError: string | null = null;
+
+// CRON : toutes les heures (0 * * * *)
+cron.schedule('0 * * * *', async () => {
+  try {
+    console.log('[CRON] ⏰ Lancement du bulk wallpaper scraping (service wallpaper)...');
+    const response = await fetch('http://localhost:3301/scrape/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ times: 50 }) // 50 images par heure
+    });
+    const result = await response.json();
+    console.log('[CRON] ✅ Réponse du bulk:', result);
+    lastCronStatus = 'success';
+    lastCronTime = new Date().toISOString();
+    lastCronError = null;
+  } catch (error) {
+    console.error('[CRON] ❌ Erreur lors du bulk wallpaper scraping:', error);
+    lastCronStatus = 'error';
+    lastCronTime = new Date().toISOString();
+    lastCronError = error instanceof Error ? error.message : String(error);
+  }
+});
+
+// Scrape immédiat au lancement du service
+(async () => {
+  try {
+    console.log('[CRON] ⏩ Scraping bulk immédiat au démarrage du service...');
+    const response = await fetch('http://localhost:3301/scrape/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ times: 50 })
+    });
+    const result = await response.json();
+    console.log('[CRON] ✅ Réponse du bulk (au démarrage):', result);
+    lastCronStatus = 'success';
+    lastCronTime = new Date().toISOString();
+    lastCronError = null;
+  } catch (error) {
+    console.error('[CRON] ❌ Erreur lors du bulk wallpaper scraping (au démarrage):', error);
+    lastCronStatus = 'error';
+    lastCronTime = new Date().toISOString();
+    lastCronError = error instanceof Error ? error.message : String(error);
+  }
+})();
+
+// Route de contrôle du cron
+app.get('/cron-status', (req, res) => {
+  res.json({
+    lastCronStatus,
+    lastCronTime,
+    lastCronError
   });
 });
 

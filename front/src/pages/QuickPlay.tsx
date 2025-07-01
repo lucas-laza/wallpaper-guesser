@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, ChevronDown, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Play, ChevronDown, AlertTriangle, RotateCcw, Clock, Target } from 'lucide-react';
 import BackgroundImage from '../components/BackgroundImage';
 import GlassCard from '../components/GlassCard';
 import LoginModal from '../components/LoginModal';
@@ -60,11 +60,17 @@ const QuickPlay = () => {
     setError('');
 
     try {
+      console.log('Données envoyées au backend :', { roundsNumber, time, map: selectedRegion });
       const game = await startSoloGame({
         roundsNumber,
         time,
         map: selectedRegion
       });
+      console.log('Réponse reçue du backend :', game);
+      
+      if (game.roundsNumber < roundsNumber) {
+        alert(`Seulement ${game.roundsNumber} images disponibles pour cette map. Le jeu comportera ${game.roundsNumber} manches.`);
+      }
       
       navigate(`/game/${game.gameId}`);
     } catch (err: any) {
@@ -116,6 +122,26 @@ const QuickPlay = () => {
 
   return (
     <>
+      {/* Header dynamique QuickPlay (avant lancement du jeu) */}
+      <div className="relative z-10 p-4">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <GlassCard className="flex items-center gap-3 py-2 px-4">
+              <div className="flex items-center gap-2 text-white">
+                <Target size={18} />
+                <span className="font-medium">1/{roundsNumber}</span>
+              </div>
+              <div className="flex items-center gap-2 text-white">
+                <Clock size={18} />
+                <span className="font-medium">
+                  {Math.floor(time / 60)}:{(time % 60).toString().padStart(2, '0')}
+                </span>
+              </div>
+            </GlassCard>
+          </div>
+        </div>
+      </div>
+      {/* Fin header dynamique */}
       <BackgroundImage src="https://images.pexels.com/photos/417074/pexels-photo-417074.jpeg?auto=compress&cs=tinysrgb&w=1920&h=1080&fit=crop">
         <div className="min-h-screen flex items-center justify-center p-6 pt-24">
           <div className="w-full max-w-md">
