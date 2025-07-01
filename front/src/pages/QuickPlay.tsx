@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, ChevronDown } from 'lucide-react';
+import { Play, ChevronDown, AlertTriangle, RotateCcw } from 'lucide-react';
 import BackgroundImage from '../components/BackgroundImage';
 import GlassCard from '../components/GlassCard';
 import LoginModal from '../components/LoginModal';
 import { useAuth } from '../contexts/AuthContext';
-import { startSoloGame } from '../services/api';
+import { startSoloGame, checkActiveGame, quitActiveGame, ActiveGameInfo } from '../services/api';
 
 const QuickPlay = () => {
   const navigate = useNavigate();
@@ -18,7 +18,37 @@ const QuickPlay = () => {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [error, setError] = useState('');
   
+  // États pour la gestion des parties actives
+  const [activeGame, setActiveGame] = useState<ActiveGameInfo | null>(null);
+  const [showActiveGameModal, setShowActiveGameModal] = useState(false);
+  const [isQuittingActive, setIsQuittingActive] = useState(false);
+  const [isCheckingActive, setIsCheckingActive] = useState(false);
+  
   const regions = ['World', 'Europe', 'Asia', 'North America', 'South America', 'Africa', 'Oceania'];
+
+  // Vérifier les parties actives au chargement
+  useEffect(() => {
+    if (isAuthenticated) {
+      checkForActiveGame();
+    }
+  }, [isAuthenticated]);
+
+  const checkForActiveGame = async () => {
+    if (!isAuthenticated) return;
+    
+    setIsCheckingActive(true);
+    try {
+      const activeGameInfo = await checkActiveGame();
+      if (activeGameInfo.hasActiveGame) {
+        setActiveGame(activeGameInfo);
+        setShowActiveGameModal(true);
+      }
+    } catch (error) {
+      console.error('Error checking for active game:', error);
+    } finally {
+      setIsCheckingActive(false);
+    }
+  };
 
   const handleStartGame = async () => {
     if (!isAuthenticated) {
@@ -33,15 +63,55 @@ const QuickPlay = () => {
       const game = await startSoloGame({
         roundsNumber,
         time,
+        map: selectedRegion
       });
       
-      // Redirect to game page with game ID
       navigate(`/game/${game.gameId}`);
     } catch (err: any) {
-      setError(err.message);
+      // Vérifier si c'est un conflit de partie active
+      if (err.message.includes('already have an active game')) {
+        await checkForActiveGame();
+      } else {
+        setError(err.message);
+      }
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleResumeActiveGame = () => {
+    if (activeGame?.gameId) {
+      navigate(`/game/${activeGame.gameId}`);
+    }
+  };
+
+  const handleQuitActiveGame = async () => {
+    if (!window.confirm('Are you sure you want to quit your active game? All progress will be lost.')) {
+      return;
+    }
+
+    setIsQuittingActive(true);
+    try {
+      await quitActiveGame();
+      setActiveGame(null);
+      setShowActiveGameModal(false);
+      
+      // Attendre un peu pour que la base de données se mette à jour
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Maintenant on peut essayer de démarrer la nouvelle partie
+      await handleStartGame();
+    } catch (error: any) {
+      console.error('Error quitting active game:', error);
+      setError(`Failed to quit active game: ${error.message}`);
+    } finally {
+      setIsQuittingActive(false);
+    }
+  };
+
+  const handleCloseActiveGameModal = () => {
+    setShowActiveGameModal(false);
+    setActiveGame(null);
   };
 
   return (
@@ -55,6 +125,18 @@ const QuickPlay = () => {
               {error && (
                 <div className="mb-6 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-300 text-sm">
                   {error}
+                  <button 
+                    onClick={() => setError('')} 
+                    className="ml-2 text-red-200 hover:text-white"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              {isCheckingActive && (
+                <div className="mb-6 p-3 bg-orange-500/20 border border-orange-500/50 rounded-lg text-orange-300 text-sm">
+                  Checking for active games...
                 </div>
               )}
 
@@ -94,9 +176,6 @@ const QuickPlay = () => {
                       </div>
                     )}
                   </div>
-                  <p className="text-white/50 text-xs mt-2">
-                    Region filtering will be available soon
-                  </p>
                 </div>
 
                 {/* Rounds Number */}
@@ -136,11 +215,20 @@ const QuickPlay = () => {
               {/* Start Button */}
               <button
                 onClick={handleStartGame}
-                disabled={isLoading}
+                disabled={isLoading || isCheckingActive}
                 className="w-full flex items-center justify-center gap-3 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 text-white font-bold py-4 px-6 rounded-lg transition-colors duration-200 transform hover:scale-105 disabled:transform-none"
               >
-                <Play size={20} />
-                {isLoading ? 'Starting Game...' : 'Start Game'}
+                {isLoading ? (
+                  <>
+                    <RotateCcw size={20} className="animate-spin" />
+                    Starting Game...
+                  </>
+                ) : (
+                  <>
+                    <Play size={20} />
+                    Start Game
+                  </>
+                )}
               </button>
 
               {!isAuthenticated && (
@@ -152,6 +240,78 @@ const QuickPlay = () => {
           </div>
         </div>
       </BackgroundImage>
+
+      {/* Modal de partie active */}
+      {showActiveGameModal && activeGame && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+          <GlassCard className="max-w-md w-full">
+            <div className="text-center mb-6">
+              <div className="flex justify-center mb-3">
+                <div className="w-12 h-12 bg-yellow-500/20 rounded-full flex items-center justify-center">
+                  <AlertTriangle size={24} className="text-yellow-500" />
+                </div>
+              </div>
+              <h2 className="text-white text-xl font-bold mb-2">Active Game Found</h2>
+              <p className="text-white/80 text-sm">
+                You have an active game in progress. Resume it or quit to start a new one.
+              </p>
+            </div>
+
+            <div className="bg-white/10 rounded-lg p-4 mb-6">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <div className="text-white/60">Progress</div>
+                  <div className="text-white font-medium">
+                    Round {activeGame.currentRound}/{activeGame.totalRounds}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/60">Map</div>
+                  <div className="text-white font-medium">{activeGame.map}</div>
+                </div>
+              </div>
+              
+              {activeGame.isCompleted && (
+                <div className="mt-3 p-2 bg-green-500/20 border border-green-500/50 rounded text-green-300 text-sm text-center">
+                  Game completed! View your results.
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleResumeActiveGame}
+                className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+              >
+                <Play size={16} />
+                {activeGame.isCompleted ? 'View Results' : 'Resume'}
+              </button>
+              
+              <button
+                onClick={handleQuitActiveGame}
+                disabled={isQuittingActive}
+                className="flex-1 bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 text-red-300 font-bold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isQuittingActive ? (
+                  <>
+                    <RotateCcw size={16} className="animate-spin" />
+                    Quitting...
+                  </>
+                ) : (
+                  'Quit & Start New'
+                )}
+              </button>
+            </div>
+
+            <button
+              onClick={handleCloseActiveGameModal}
+              className="w-full mt-3 text-white/60 hover:text-white/80 text-sm py-2 transition-colors"
+            >
+              Cancel
+            </button>
+          </GlassCard>
+        </div>
+      )}
 
       {/* Login Modal */}
       <LoginModal 

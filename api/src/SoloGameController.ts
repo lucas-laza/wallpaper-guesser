@@ -3,7 +3,7 @@ import { Game, GameStatus, GameMode } from "./Game";
 import { Round } from "./Round";
 import { User } from "./User";
 import { Wallpaper } from "./Wallpaper";
-import { Party, PartyType } from "./Party";
+import { Party, PartyType, PartyStatus } from "./Party";
 import { authenticateToken, AuthenticatedRequest } from "./auth-middleware";
 
 export const soloGameRouter = express.Router();
@@ -52,14 +52,167 @@ class WallpaperService {
   }
 }
 
+// Service pour gérer les parties actives
+class GameSessionService {
+  static async getActiveGame(userId: number): Promise<Game | null> {
+    return await Game.findOne({
+      where: { 
+        status: GameStatus.IN_PROGRESS,
+        players: { id: userId }
+      },
+      relations: ["party", "players"]
+    });
+  }
+
+  static async getAllActiveGames(userId: number): Promise<Game[]> {
+    return await Game.find({
+      where: { 
+        status: GameStatus.IN_PROGRESS,
+        players: { id: userId }
+      },
+      relations: ["party", "players"]
+    });
+  }
+
+  static async forceCleanupActiveGames(userId: number): Promise<void> {
+    // Nettoyer toutes les parties actives de cet utilisateur
+    const activeGames = await this.getAllActiveGames(userId);
+    
+    for (const game of activeGames) {
+      game.status = GameStatus.ABORTED;
+      await game.save();
+      
+      if (game.party) {
+        game.party.status = PartyStatus.DISBANDED;
+        await game.party.save();
+      }
+    }
+  }
+
+  static async getCurrentRound(gameId: number, userId: number): Promise<{ round: Round | null, roundNumber: number, totalRounds: number }> {
+    const rounds = await Round.find({
+      where: { 
+        game: { id: gameId },
+        players: { id: userId }
+      },
+      relations: ["wallpaper"],
+      order: { relative_id: "ASC" }
+    });
+
+    if (rounds.length === 0) {
+      return { round: null, roundNumber: 0, totalRounds: 0 };
+    }
+
+    // Trouver le premier round sans réponse (guesses = 0) ou le dernier round
+    let currentRound = rounds.find(round => round.guesses === 0);
+    if (!currentRound) {
+      // Si tous les rounds ont été joués, retourner le dernier
+      currentRound = rounds[rounds.length - 1];
+    }
+
+    const roundNumber = currentRound.relative_id;
+    const totalRounds = rounds.length;
+
+    return { round: currentRound, roundNumber, totalRounds };
+  }
+}
+
+// Vérifie s'il y a une partie active et la retourne
+soloGameRouter.get("/active", async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.userId;
+    
+    const activeGame = await GameSessionService.getActiveGame(userId);
+    
+    if (!activeGame) {
+      return res.json({ hasActiveGame: false });
+    }
+
+    const { round: currentRound, roundNumber, totalRounds } = await GameSessionService.getCurrentRound(activeGame.id, userId);
+    
+    const isGameCompleted = currentRound && currentRound.guesses > 0 && roundNumber === totalRounds;
+
+    res.json({
+      hasActiveGame: true,
+      gameId: activeGame.id,
+      currentRound: roundNumber,
+      totalRounds: totalRounds,
+      map: activeGame.map,
+      time: activeGame.time,
+      isCompleted: isGameCompleted,
+      roundData: currentRound ? {
+        id: currentRound.id,
+        relative_id: currentRound.relative_id,
+        guesses: currentRound.guesses,
+        wallpaper: {
+          id: currentRound.wallpaper.id,
+          title: currentRound.wallpaper.title,
+          image: currentRound.wallpaper.img,
+          copyright: currentRound.wallpaper.copyright
+        }
+      } : null
+    });
+  } catch (err) {
+    console.error("Error checking active game:", err);
+    res.status(500).json({ error: "Failed to check active game" });
+  }
+});
+
+// Abandonne proprement la partie active
+soloGameRouter.post("/quit", async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.userId;
+    
+    // Nettoyer TOUTES les parties actives pour cet utilisateur (au cas où il y en aurait plusieurs)
+    await GameSessionService.forceCleanupActiveGames(userId);
+
+    res.json({ 
+      message: "All active games quit successfully",
+      userId: userId,
+      status: "aborted"
+    });
+  } catch (err) {
+    console.error("Error quitting game:", err);
+    res.status(500).json({ error: "Failed to quit game" });
+  }
+});
+
 // Crée une partie solo et les rounds associés
 soloGameRouter.post("/start", async (req: AuthenticatedRequest, res) => {
   try {
-    const { roundsNumber = 3, time = 60, map = 'World' } = req.body; // Changé region en map
-    
-    // Récupérer l'utilisateur depuis le token (middleware)
+    const { roundsNumber = 3, time = 60, map = 'World' } = req.body;
     const userId = req.user!.userId;
 
+    // Vérifier s'il y a déjà des parties actives et les nettoyer d'abord
+    const existingActiveGames = await GameSessionService.getAllActiveGames(userId);
+    
+    if (existingActiveGames.length > 0) {
+      console.log(`[GAME_CREATE] Found ${existingActiveGames.length} active games for user ${userId}, cleaning up...`);
+      
+      // Nettoyer toutes les parties actives
+      await GameSessionService.forceCleanupActiveGames(userId);
+      
+      // Attendre un court instant pour s'assurer que la transaction est terminée
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // Double vérification après nettoyage
+    const stillActiveGame = await GameSessionService.getActiveGame(userId);
+    if (stillActiveGame) {
+      const { round: currentRound, roundNumber, totalRounds } = await GameSessionService.getCurrentRound(stillActiveGame.id, userId);
+      
+      return res.status(409).json({ 
+        error: "You already have an active game",
+        activeGame: {
+          gameId: stillActiveGame.id,
+          currentRound: roundNumber,
+          totalRounds: totalRounds,
+          map: stillActiveGame.map,
+          time: stillActiveGame.time
+        }
+      });
+    }
+    
     const user = await User.findOneBy({ id: userId });
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -98,6 +251,7 @@ soloGameRouter.post("/start", async (req: AuthenticatedRequest, res) => {
     party.players = [user];
     party.code = Math.random().toString(36).substring(2, 10);
     party.type = PartyType.SOLO;
+    party.status = PartyStatus.IN_PROGRESS;
     await party.save();
 
     // Create the solo game and associate it with the party
@@ -106,7 +260,7 @@ soloGameRouter.post("/start", async (req: AuthenticatedRequest, res) => {
     game.players = [user];
     game.status = GameStatus.IN_PROGRESS;
     game.gamemode = GameMode.STANDARD;
-    game.map = map; // Stocker la map sélectionnée
+    game.map = map;
     game.rounds_number = actualRoundsNumber;
     game.modifiers = {};
     game.winner = null;
@@ -124,7 +278,7 @@ soloGameRouter.post("/start", async (req: AuthenticatedRequest, res) => {
       round.players = [user];
       round.wallpaper = wallpaper;
       round.guesses = 0;
-      round.relative_id = i + 1; // 1, 2, 3, etc.
+      round.relative_id = i + 1;
 
       await round.save();
       
@@ -141,11 +295,61 @@ soloGameRouter.post("/start", async (req: AuthenticatedRequest, res) => {
       time: time,
       map: map,
       wallpapersSelected: validWallpapers.length,
-      uniqueWallpapers: true
+      uniqueWallpapers: true,
+      currentRound: 1
     });
   } catch (err) {
     console.error("Error in solo game creation:", err);
     res.status(500).json({ error: "Failed to create solo game" });
+  }
+});
+
+// Reprend une partie existante (utilisé quand on revient sur le jeu)
+soloGameRouter.post("/resume/:gameId", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = req.params;
+    const userId = req.user!.userId;
+    
+    const game = await Game.findOne({
+      where: { 
+        id: parseInt(gameId),
+        status: GameStatus.IN_PROGRESS,
+        players: { id: userId }
+      },
+      relations: ["party", "players"]
+    });
+
+    if (!game) {
+      return res.status(404).json({ error: "Active game not found" });
+    }
+
+    const { round: currentRound, roundNumber, totalRounds } = await GameSessionService.getCurrentRound(game.id, userId);
+
+    if (!currentRound) {
+      return res.status(404).json({ error: "No rounds found for this game" });
+    }
+
+    res.json({
+      gameId: game.id,
+      currentRound: roundNumber,
+      totalRounds: totalRounds,
+      map: game.map,
+      time: game.time,
+      roundData: {
+        id: currentRound.id,
+        relative_id: currentRound.relative_id,
+        guesses: currentRound.guesses,
+        wallpaper: {
+          id: currentRound.wallpaper.id,
+          title: currentRound.wallpaper.title,
+          image: currentRound.wallpaper.img,
+          copyright: currentRound.wallpaper.copyright
+        }
+      }
+    });
+  } catch (err) {
+    console.error("Error resuming game:", err);
+    res.status(500).json({ error: "Failed to resume game" });
   }
 });
 
@@ -186,7 +390,7 @@ soloGameRouter.get("/game/:gameId/rounds", async (req: AuthenticatedRequest, res
     const rounds = await Round.find({
       where: { game: { id: parseInt(gameId) } },
       relations: ["wallpaper", "players", "game"],
-      order: { relative_id: "ASC" } // Trier par relative_id au lieu de id
+      order: { relative_id: "ASC" }
     });
 
     if (rounds.length === 0) {
@@ -267,8 +471,8 @@ soloGameRouter.get("/game/:gameId/round/:relativeId", async (req: AuthenticatedR
 soloGameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: AuthenticatedRequest, res) => {
   try {
     const { gameId, relativeId } = req.params;
-    const { country } = req.body; // Maintenant on reçoit le nom du pays au lieu des coordonnées
-    const userId = req.user!.userId; // Récupéré depuis le token
+    const { country } = req.body;
+    const userId = req.user!.userId;
 
     if (!country) {
       return res.status(400).json({ error: "Missing required field: country" });
@@ -295,6 +499,11 @@ soloGameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authent
     // Vérifier que le jeu est en cours
     if (round.game.status !== GameStatus.IN_PROGRESS) {
       return res.status(400).json({ error: "Game is not in progress" });
+    }
+
+    // Vérifier si ce round a déjà été joué
+    if (round.guesses > 0) {
+      return res.status(400).json({ error: "This round has already been played" });
     }
 
     // Vérifier si la réponse est correcte
@@ -333,15 +542,15 @@ soloGameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authent
   }
 });
 
-// Termine un jeu - Supprime userId du body
+// Termine un jeu
 soloGameRouter.post("/game/:gameId/finish", async (req: AuthenticatedRequest, res) => {
   try {
     const { gameId } = req.params;
-    const userId = req.user!.userId; // Récupéré depuis le token
+    const userId = req.user!.userId;
 
     const game = await Game.findOne({
       where: { id: parseInt(gameId) },
-      relations: ["players"]
+      relations: ["players", "party"]
     });
 
     if (!game) {
@@ -364,6 +573,12 @@ soloGameRouter.post("/game/:gameId/finish", async (req: AuthenticatedRequest, re
     }
 
     await game.save();
+
+    // Marquer la party comme terminée
+    if (game.party) {
+      game.party.status = PartyStatus.COMPLETED;
+      await game.party.save();
+    }
 
     res.json({ 
       message: "Game finished successfully",

@@ -41,7 +41,10 @@ class WallpaperScraper {
 
   static loadCountryData(): Country[] {
     try {
-      const countryDataRaw = fs.readFileSync('/app/countries.json', 'utf8');
+      const countryPath = process.env.NODE_ENV === 'production' 
+      ? '/app/countries.json'
+      : './countries.json';
+      const countryDataRaw = fs.readFileSync(countryPath, 'utf8');
       return JSON.parse(countryDataRaw);
     } catch (error) {
       console.error('[COUNTRIES] Erreur lors du chargement de countries.json:', error);

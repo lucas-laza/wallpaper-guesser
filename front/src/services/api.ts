@@ -24,6 +24,28 @@ export interface Game {
   time: number;
   map?: string;
   status?: string;
+  currentRound?: number;
+}
+
+export interface ActiveGameInfo {
+  hasActiveGame: boolean;
+  gameId?: number;
+  currentRound?: number;
+  totalRounds?: number;
+  map?: string;
+  time?: number;
+  isCompleted?: boolean;
+  roundData?: {
+    id: number;
+    relative_id: number;
+    guesses: number;
+    wallpaper: {
+      id: number;
+      title: string;
+      image: string;
+      copyright: string;
+    };
+  };
 }
 
 export interface Party {
@@ -184,7 +206,23 @@ export const getCurrentUser = async (): Promise<User> => {
   return apiRequest('/user/profile');
 };
 
-// Solo Game API calls
+// Solo Game API calls - NOUVELLES FONCTIONS
+export const checkActiveGame = async (): Promise<ActiveGameInfo> => {
+  return apiRequest('/game/solo/active');
+};
+
+export const quitActiveGame = async (): Promise<{ message: string; gameId: number; status: string }> => {
+  return apiRequest('/game/solo/quit', {
+    method: 'POST',
+  });
+};
+
+export const resumeGame = async (gameId: number): Promise<any> => {
+  return apiRequest(`/game/solo/resume/${gameId}`, {
+    method: 'POST',
+  });
+};
+
 export const startSoloGame = async (gameSettings: {
   roundsNumber?: number;
   time?: number;

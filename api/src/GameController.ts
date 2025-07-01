@@ -5,16 +5,21 @@ import { Round } from "./Round";
 import { User } from "./User";
 import { Party, PartyType } from "./Party";
 import { authenticateToken, AuthenticatedRequest } from "./auth-middleware";
+import { soloGameRouter } from "./SoloGameController"; // Import du nouveau router solo
 
 export const gameRouter = express.Router();
 
 // Appliquer le middleware d'authentification à toutes les routes
 gameRouter.use(authenticateToken);
 
-// ===== ROUTES SOLO GAME =====
+// ===== ROUTES SOLO GAME (NOUVEAU) =====
+// Intégrer le nouveau router solo avec toutes les nouvelles fonctionnalités
+gameRouter.use("/solo", soloGameRouter);
+
+// ===== ROUTES SOLO GAME (ANCIENNES - on peut les garder pour compatibilité) =====
 
 // Démarre un jeu solo
-gameRouter.post("/solo/start", async (req: AuthenticatedRequest, res) => {
+gameRouter.post("/solo/start-legacy", async (req: AuthenticatedRequest, res) => {
   try {
     const { roundsNumber = 3, time = 60, map = 'World', gamemode } = req.body;
     const userId = req.user!.userId;

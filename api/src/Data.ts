@@ -55,7 +55,11 @@ export class Data {
   }
 
   loadCountryData() {
-    const countryDataRaw = fs.readFileSync('countries.json', 'utf8');
+    const countryPath = process.env.NODE_ENV === 'production' 
+      ? '/app/countries.json'
+      : './countries.json';
+    
+    const countryDataRaw = fs.readFileSync(countryPath, 'utf8');
     this.countryData = JSON.parse(countryDataRaw);
   }
 

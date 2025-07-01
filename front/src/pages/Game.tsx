@@ -3,7 +3,16 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Clock, Target, ArrowRight, Home, Settings, X, Send } from 'lucide-react';
 import GlassCard from '../components/GlassCard';
 import CountryAutocomplete from '../components/CountryAutocomplete';
-import { Round, GuessResult, getRound, submitGuess, finishGame } from '../services/api';
+import { 
+  Round, 
+  GuessResult, 
+  getRound, 
+  submitGuess, 
+  finishGame, 
+  quitActiveGame,
+  checkActiveGame,
+  resumeGame 
+} from '../services/api';
 
 const Game = () => {
   const { gameId } = useParams<{ gameId: string }>();
@@ -11,7 +20,7 @@ const Game = () => {
   
   const [currentRound, setCurrentRound] = useState<Round | null>(null);
   const [currentRoundNumber, setCurrentRoundNumber] = useState(1);
-  const [totalRounds] = useState(3); // TODO: Get from game settings
+  const [totalRounds, setTotalRounds] = useState(3);
   const [timeLeft, setTimeLeft] = useState(60);
   const [isGuessing, setIsGuessing] = useState(false);
   const [guessResult, setGuessResult] = useState<GuessResult | null>(null);
@@ -19,12 +28,13 @@ const Game = () => {
   const [isGameFinished, setIsGameFinished] = useState(false);
   const [error, setError] = useState('');
   const [selectedCountry, setSelectedCountry] = useState<string>('');
+  const [isQuitting, setIsQuitting] = useState(false);
 
   useEffect(() => {
     if (gameId) {
-      loadRound(currentRoundNumber);
+      initializeGame();
     }
-  }, [gameId, currentRoundNumber]);
+  }, [gameId]);
 
   useEffect(() => {
     if (timeLeft > 0 && !guessResult && !isGameFinished) {
@@ -35,6 +45,68 @@ const Game = () => {
       handleGuessSubmit('');
     }
   }, [timeLeft, guessResult, isGameFinished]);
+
+  const initializeGame = async () => {
+    try {
+      setError('');
+      
+      // Vérifier s'il y a une partie active
+      const activeGameInfo = await checkActiveGame();
+      
+      if (!activeGameInfo.hasActiveGame) {
+        setError('No active game found');
+        return;
+      }
+
+      if (activeGameInfo.gameId !== parseInt(gameId!)) {
+        // Rediriger vers la bonne partie active
+        navigate(`/game/${activeGameInfo.gameId}`);
+        return;
+      }
+
+      // Configurer les informations de la partie
+      setTotalRounds(activeGameInfo.totalRounds || 3);
+      setCurrentRoundNumber(activeGameInfo.currentRound || 1);
+      
+      // Si la partie est terminée
+      if (activeGameInfo.isCompleted) {
+        setIsGameFinished(true);
+        return;
+      }
+
+      // Charger le round actuel
+      if (activeGameInfo.roundData) {
+        setCurrentRound(activeGameInfo.roundData);
+        setTimeLeft(activeGameInfo.time || 60);
+        
+        // Si ce round a déjà été joué, on peut passer au suivant ou finir
+        if (activeGameInfo.roundData.guesses > 0) {
+          // Simuler le résultat pour permettre de passer au round suivant
+          // En réalité, il faudrait récupérer le vrai résultat depuis le backend
+          setGuessResult({
+            roundId: activeGameInfo.roundData.id,
+            relative_id: activeGameInfo.roundData.relative_id,
+            guessNumber: activeGameInfo.roundData.guesses,
+            isCorrect: false, // Placeholder
+            score: 0, // Placeholder
+            correctLocation: {
+              country: { code: '', text: 'Unknown' },
+              title: 'Unknown',
+              tags: []
+            },
+            userGuess: { country: 'Previous guess' }
+          });
+        }
+      } else {
+        // Charger le round manuellement
+        await loadRound(activeGameInfo.currentRound || 1);
+      }
+      
+    } catch (err: any) {
+      console.error('Error initializing game:', err);
+      setError(err.message);
+    }
+  };
 
   const loadRound = async (roundNumber: number) => {
     try {
@@ -74,6 +146,7 @@ const Game = () => {
   const handleNextRound = () => {
     if (currentRoundNumber < totalRounds) {
       setCurrentRoundNumber(currentRoundNumber + 1);
+      loadRound(currentRoundNumber + 1);
     } else {
       finishGameHandler();
     }
@@ -96,9 +169,24 @@ const Game = () => {
     navigate('/');
   };
 
-  const handleQuitGame = () => {
-    if (window.confirm('Are you sure you want to quit the game?')) {
+  const handleQuitGame = async () => {
+    if (!window.confirm('Are you sure you want to quit the game? Your progress will be lost.')) {
+      return;
+    }
+
+    setIsQuitting(true);
+    try {
+      await quitActiveGame();
+      // Attendre un peu pour s'assurer que la base de données est mise à jour
+      await new Promise(resolve => setTimeout(resolve, 500));
       navigate('/');
+    } catch (err: any) {
+      console.error('Error quitting game:', err);
+      setError('Failed to quit game properly');
+      // Naviguer quand même vers l'accueil en cas d'erreur
+      navigate('/');
+    } finally {
+      setIsQuitting(false);
     }
   };
 
@@ -203,7 +291,8 @@ const Game = () => {
             </button>
             <button
               onClick={handleQuitGame}
-              className="flex items-center justify-center w-10 h-10 rounded-full bg-red-500/20 border border-red-500/50 text-red-300 hover:bg-red-500/30 transition-colors"
+              disabled={isQuitting}
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-red-500/20 border border-red-500/50 text-red-300 hover:bg-red-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <X size={18} />
             </button>
