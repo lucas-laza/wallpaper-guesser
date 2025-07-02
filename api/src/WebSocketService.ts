@@ -3,7 +3,7 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import { User } from './User';
 import { Party, PartyStatus } from './Party';
 import { Game, GameStatus } from './Game';
-import { Round } from './Round'; // CORRECTION: Ajouter l'import Round
+import { Round } from './Round';
 import { GameService } from './GameService';
 import * as jwt from 'jsonwebtoken';
 
@@ -42,7 +42,6 @@ export class WebSocketService {
   }
 
   private setupMiddleware() {
-    // Middleware d'authentification pour les WebSockets
     this.io.use(async (socket: AuthenticatedSocket, next) => {
       try {
         const token = socket.handshake.auth.token;
@@ -72,7 +71,6 @@ export class WebSocketService {
     this.io.on('connection', (socket: AuthenticatedSocket) => {
       console.log(`Socket connected: ${socket.id} (User: ${socket.userName})`);
 
-      // Rejoint une party room
       socket.on('join_party', async (data: { partyId: number }) => {
         try {
           await this.handleJoinParty(socket, data.partyId);
@@ -82,12 +80,10 @@ export class WebSocketService {
         }
       });
 
-      // Quitte une party room
       socket.on('leave_party', () => {
         this.handleLeaveParty(socket);
       });
 
-      // Admin démarre le jeu
       socket.on('start_game', async (data: { partyId: number; config: any }) => {
         try {
           await this.handleStartGame(socket, data.partyId, data.config);
@@ -97,12 +93,10 @@ export class WebSocketService {
         }
       });
 
-      // Joueur prêt pour le prochain round
       socket.on('player_ready', (data: { partyId: number }) => {
         this.handlePlayerReady(socket, data.partyId);
       });
 
-      // Soumission d'une réponse
       socket.on('submit_guess', async (data: { partyId: number; gameId: number; relativeId: number; country: string }) => {
         try {
           await this.handleSubmitGuess(socket, data);
@@ -112,12 +106,10 @@ export class WebSocketService {
         }
       });
 
-      // Demande de passage au round suivant
       socket.on('next_round', (data: { partyId: number }) => {
         this.handleNextRound(socket, data.partyId);
       });
 
-      // Gestion de la déconnexion
       socket.on('disconnect', () => {
         console.log(`Socket disconnected: ${socket.id} (User: ${socket.userName})`);
         this.handleLeaveParty(socket);
@@ -130,7 +122,6 @@ export class WebSocketService {
 
     console.log(`[WebSocket] User ${socket.userName} attempting to join party ${partyId}`);
 
-    // Vérifier que la party existe et que l'utilisateur en fait partie
     const party = await Party.findOne({
       where: { id: partyId },
       relations: ['players', 'admin']
@@ -145,16 +136,13 @@ export class WebSocketService {
       throw new Error('You are not a member of this party');
     }
 
-    // Quitter l'ancienne party si applicable
     if (socket.currentPartyId && socket.currentPartyId !== partyId) {
       this.handleLeaveParty(socket);
     }
 
-    // Rejoindre la nouvelle party room
     socket.currentPartyId = partyId;
     socket.join(`party_${partyId}`);
 
-    // Créer ou récupérer la party room
     if (!this.partyRooms.has(partyId)) {
       console.log(`[WebSocket] Creating new party room for party ${partyId}`);
       this.partyRooms.set(partyId, {
@@ -165,20 +153,16 @@ export class WebSocketService {
 
     const partyRoom = this.partyRooms.get(partyId)!;
     
-    // CORRECTION: Vérifier si le joueur est déjà dans la room
     if (partyRoom.players.has(socket.userId)) {
       console.log(`[WebSocket] User ${socket.userName} already in party room ${partyId}, updating socket`);
-      // Mettre à jour le socket
       partyRoom.players.get(socket.userId)!.socket = socket;
     } else {
-      // Ajouter le nouveau joueur
       partyRoom.players.set(socket.userId, {
         socket: socket,
         user: { id: socket.userId, name: socket.userName! }
       });
     }
 
-    // Vérifier s'il y a un jeu actif
     const activeGame = await Game.findOne({
       where: { party: { id: partyId }, status: GameStatus.IN_PROGRESS },
       relations: ['players']
@@ -200,22 +184,18 @@ export class WebSocketService {
       };
     }
 
-    // CORRECTION: Créer la liste des joueurs depuis la DB ET WebSocket
     const allPlayers = new Map<number, { id: number; name: string }>();
     
-    // Ajouter les joueurs de la DB
     party.players.forEach(player => {
       allPlayers.set(player.id, { id: player.id, name: player.name });
     });
     
-    // Marquer les joueurs connectés via WebSocket
     const connectedPlayersList = Array.from(allPlayers.values()).map(player => ({
       ...player,
       isConnected: partyRoom.players.has(player.id)
     }));
 
-    // Notifier tous les joueurs de la party
-    this.broadcastToParty(partyId, 'player_joined', {
+    socket.to(`party_${partyId}`).emit('player_joined', {
       user: { id: socket.userId, name: socket.userName },
       players: connectedPlayersList,
       party: {
@@ -226,7 +206,6 @@ export class WebSocketService {
       }
     });
 
-    // Envoyer l'état actuel au joueur qui rejoint
     socket.emit('party_state', {
       party: {
         id: party.id,
@@ -238,10 +217,15 @@ export class WebSocketService {
       gameState: partyRoom.gameState
     });
 
+    this.broadcastToParty(partyId, 'party_updated', {
+      partyId,
+      players: connectedPlayersList,
+    });
+
     console.log(`[WebSocket] User ${socket.userName} joined party ${partyId}, room now has ${partyRoom.players.size} connected players (${party.players.length} total)`);
   }
 
-  private handleLeaveParty(socket: AuthenticatedSocket) {
+  private async handleLeaveParty(socket: AuthenticatedSocket) {
     if (!socket.currentPartyId || !socket.userId) return;
 
     const partyId = socket.currentPartyId;
@@ -252,21 +236,30 @@ export class WebSocketService {
     if (partyRoom) {
       partyRoom.players.delete(socket.userId);
       
-      // Notifier les autres joueurs
       this.broadcastToParty(partyId, 'player_left', {
         user: { id: socket.userId, name: socket.userName },
         players: Array.from(partyRoom.players.values()).map(p => p.user)
       });
 
-      // CORRECTION: Ne pas supprimer la room immédiatement, attendre un délai
+      this.broadcastToParty(partyId, 'party_updated', {
+        partyId,
+        players: Array.from(partyRoom.players.values()).map(p => p.user),
+      });
+
       if (partyRoom.players.size === 0) {
         console.log(`[WebSocket] Party room ${partyId} is empty, scheduling cleanup in 30 seconds`);
         
-        // Attendre 30 secondes avant de supprimer pour permettre aux reconnexions
         setTimeout(async () => {
           const currentRoom = this.partyRooms.get(partyId);
           if (currentRoom && currentRoom.players.size === 0) {
-            // Vérifier aussi en base de données si la party existe encore
+            const activeGame = await Game.findOne({
+              where: { party: { id: partyId }, status: GameStatus.IN_PROGRESS },
+            });
+            if (activeGame) {
+              console.log(`[WebSocket] Party room ${partyId} has an active game (gameId ${activeGame.id}), keeping room in memory`);
+              return;
+            }
+
             const party = await Party.findOne({
               where: { id: partyId },
               relations: ['players']
@@ -295,19 +288,13 @@ export class WebSocketService {
     let partyRoom = this.partyRooms.get(partyId);
     if (!partyRoom) {
       console.error(`[WebSocket] Party room ${partyId} not found in memory`);
-      try {
-        await this.handleJoinParty(socket, partyId);
-        partyRoom = this.partyRooms.get(partyId);
-        if (!partyRoom) {
-          throw new Error('Party room not found and could not be created');
-        }
-      } catch (error) {
-        console.error(`[WebSocket] Failed to recreate party room ${partyId}:`, error);
+      await this.handleJoinParty(socket, partyId);
+      partyRoom = this.partyRooms.get(partyId);
+      if (!partyRoom) {
         throw new Error('Party room not found and could not be created');
       }
     }
 
-    // Vérifier que c'est l'admin qui démarre
     const party = await Party.findOne({
       where: { id: partyId },
       relations: ['admin', 'players']
@@ -319,10 +306,13 @@ export class WebSocketService {
 
     console.log(`[WebSocket] Starting game for party ${partyId} with config:`, config);
 
-    // Démarrer le jeu via le service
+    await this.forcePartySync(partyId);
+
     const game = await GameService.startPartyGame(partyId, socket.userId, config);
 
-    // Mettre à jour l'état de la room
+    partyRoom = this.partyRooms.get(partyId);
+    if (!partyRoom) throw new Error('Party room lost after sync');
+
     partyRoom.gameState = {
       gameId: game.id,
       currentRound: 1,
@@ -335,6 +325,7 @@ export class WebSocketService {
 
     const gameStartData = {
       gameId: game.id,
+      partyId: partyId,
       config: {
         roundsNumber: game.rounds_number,
         time: game.time,
@@ -343,65 +334,11 @@ export class WebSocketService {
       currentRound: 1
     };
 
-    // CORRECTION: Broadcast vers la room ET vers tous les sockets individuels
     this.broadcastToParty(partyId, 'game_started', gameStartData);
-    socket.emit('game_started', gameStartData);
 
-    // CORRECTION: Envoyer l'événement à TOUS les joueurs de la party, même non connectés en WebSocket
-    const playersInDB = party.players;
-    const connectedSockets = Array.from(this.io.sockets.sockets.values()) as AuthenticatedSocket[];
-    
-    console.log(`[WebSocket] Checking ${connectedSockets.length} total connected sockets`);
-    
-    // Chercher tous les sockets des joueurs de cette party
-    const partyPlayerSockets = connectedSockets.filter(s => 
-      s.userId && playersInDB.some(p => p.id === s.userId)
-    );
-
-    console.log(`[WebSocket] Found ${partyPlayerSockets.length} sockets for party players`);
-    
-    // Envoyer l'événement directement à chaque socket de joueur
-    partyPlayerSockets.forEach(playerSocket => {
-      console.log(`[WebSocket] Sending game_started to ${playerSocket.userName} (${playerSocket.userId})`);
-      playerSocket.emit('game_started', gameStartData);
-      
-      // CORRECTION: Forcer le socket à rejoindre la party room s'il ne l'a pas fait
-      if (playerSocket.currentPartyId !== partyId) {
-        console.log(`[WebSocket] Forcing ${playerSocket.userName} to join party room ${partyId}`);
-        playerSocket.currentPartyId = partyId;
-        playerSocket.join(`party_${partyId}`);
-        
-        // Ajouter à la room WebSocket
-        if (!partyRoom.players.has(playerSocket.userId!)) {
-          partyRoom.players.set(playerSocket.userId!, {
-            socket: playerSocket,
-            user: { id: playerSocket.userId!, name: playerSocket.userName! }
-          });
-        }
-      }
-    });
-
-    const playersInWebSocket = Array.from(partyRoom.players.keys());
-    console.log(`[WebSocket] Players in DB: ${playersInDB.map(p => p.id).join(', ')}`);
-    console.log(`[WebSocket] Players in WebSocket: ${playersInWebSocket.join(', ')}`);
-    console.log(`[WebSocket] Party player sockets found: ${partyPlayerSockets.map(s => s.userName).join(', ')}`);
-
-    const missingPlayers = playersInDB.filter(p => !partyPlayerSockets.some(s => s.userId === p.id));
-    if (missingPlayers.length > 0) {
-      console.warn(`[WebSocket] ${missingPlayers.length} players not connected via WebSocket: ${missingPlayers.map(p => p.name).join(', ')}`);
-      
-      // CORRECTION: Pour les joueurs non connectés, essayer de les forcer à rejoindre
-      // En attendant leur prochaine connexion, stocker l'info qu'ils doivent rejoindre le jeu
-      missingPlayers.forEach(player => {
-        console.log(`[WebSocket] Player ${player.name} (${player.id}) should connect to game ${game.id}`);
-        // TODO: Possibilité d'ajouter une notification persistante ici
-      });
-    }
-
-    console.log(`[WebSocket] Game start event sent to ${partyPlayerSockets.length} player sockets`);
+    console.log(`[WebSocket] Game start event broadcasted to party ${partyId}`);
   }
 
-  // CORRECTION: Nouvelle méthode pour forcer la synchronisation des joueurs
   public async forcePartySync(partyId: number) {
     console.log(`[WebSocket] Force syncing party ${partyId}`);
     
@@ -415,18 +352,15 @@ export class WebSocketService {
       return;
     }
 
-    // Récupérer tous les sockets connectés
     const connectedSockets = Array.from(this.io.sockets.sockets.values()) as AuthenticatedSocket[];
     
-    // Trouver les sockets des joueurs de cette party
     const partyPlayerSockets = connectedSockets.filter(s => 
       s.userId && party.players.some(p => p.id === s.userId)
     );
 
     console.log(`[WebSocket] Found ${partyPlayerSockets.length} sockets to sync for party ${partyId}`);
 
-    // Forcer tous les joueurs à rejoindre la party room
-    partyPlayerSockets.forEach(async (socket) => {
+    for (const socket of partyPlayerSockets) {
       if (socket.currentPartyId !== partyId) {
         console.log(`[WebSocket] Syncing ${socket.userName} to party ${partyId}`);
         try {
@@ -435,7 +369,7 @@ export class WebSocketService {
           console.error(`[WebSocket] Failed to sync ${socket.userName} to party ${partyId}:`, error);
         }
       }
-    });
+    }
   }
 
   private handlePlayerReady(socket: AuthenticatedSocket, partyId: number) {
@@ -446,7 +380,6 @@ export class WebSocketService {
 
     partyRoom.gameState.playersReady.add(socket.userId);
 
-    // Vérifier si tous les joueurs sont prêts
     const allPlayersReady = partyRoom.gameState.playersReady.size === partyRoom.players.size;
 
     this.broadcastToParty(partyId, 'player_ready_update', {
@@ -457,7 +390,6 @@ export class WebSocketService {
     });
 
     if (allPlayersReady) {
-      // Démarrer le round
       this.startRound(partyId);
     }
   }
@@ -468,7 +400,6 @@ export class WebSocketService {
     const partyRoom = this.partyRooms.get(data.partyId);
     if (!partyRoom || !partyRoom.gameState) throw new Error('No active game');
 
-    // Traiter la réponse
     const result = await GameService.processGuess(
       data.gameId,
       data.relativeId,
@@ -476,16 +407,13 @@ export class WebSocketService {
       data.country
     );
 
-    // Enregistrer la réponse
     partyRoom.gameState.guesses.set(socket.userId, {
       country: data.country,
       timestamp: new Date()
     });
 
-    // Envoyer le résultat au joueur
     socket.emit('guess_result', result);
 
-    // Notifier aux autres joueurs qu'une réponse a été soumise
     socket.to(`party_${data.partyId}`).emit('player_submitted', {
       playerId: socket.userId,
       playerName: socket.userName,
@@ -493,7 +421,6 @@ export class WebSocketService {
       totalPlayers: partyRoom.players.size
     });
 
-    // Si tous les joueurs ont répondu, montrer les résultats
     if (partyRoom.gameState.guesses.size === partyRoom.players.size) {
       this.showRoundResults(data.partyId);
     }
@@ -531,7 +458,6 @@ export class WebSocketService {
     const partyRoom = this.partyRooms.get(partyId);
     if (!partyRoom || !partyRoom.gameState) return;
 
-    // Calculer les résultats pour tous les joueurs
     const results = Array.from(partyRoom.gameState.guesses.entries()).map(([playerId, guess]) => {
       const player = partyRoom.players.get(playerId);
       return {
@@ -547,7 +473,6 @@ export class WebSocketService {
       results: results
     });
 
-    // Réinitialiser pour le prochain round
     partyRoom.gameState.playersReady.clear();
   }
 
@@ -555,7 +480,6 @@ export class WebSocketService {
     this.io.to(`party_${partyId}`).emit(event, data);
   }
 
-  // Méthode publique pour obtenir des statistiques
   public getStats() {
     return {
       connectedUsers: this.io.sockets.sockets.size,
@@ -568,7 +492,6 @@ export class WebSocketService {
     };
   }
 
-  // Méthode pour débugger l'état des rooms
   public getPartyRoomStats(partyId: number) {
     const room = this.partyRooms.get(partyId);
     if (!room) {

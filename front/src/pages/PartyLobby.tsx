@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   Users, 
@@ -17,7 +17,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { 
   getPartyInfo, 
-  startPartyGame, 
   leaveParty, 
   type Party, 
   type User 
@@ -27,8 +26,7 @@ const PartyLobby = () => {
   const { partyCode } = useParams<{ partyCode: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { isConnected, error: wsError, on, off, joinParty: wsJoinParty, startGame, leaveParty: wsLeaveParty } = useWebSocket();
-
+  
   const [party, setParty] = useState<Party | null>(null);
   const [players, setPlayers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -49,7 +47,16 @@ const PartyLobby = () => {
   // Refs pour gérer les états
   const hasJoinedWebSocket = useRef(false);
   const isUnmounting = useRef(false);
-  const webSocketJoinInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // ✅ Hook WebSocket SIMPLIFIÉ - plus de boucles
+  const { isConnected, error: wsError, on, off, joinParty: wsJoinParty, startGame, leaveParty: wsLeaveParty } = useWebSocket(
+    undefined,
+    (data) => {
+      if (!isUnmounting.current) {
+        setPlayers(data.players || []);
+      }
+    }
+  );
 
   useEffect(() => {
     if (partyCode) {
@@ -70,43 +77,15 @@ const PartyLobby = () => {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       isUnmounting.current = true;
-      if (webSocketJoinInterval.current) {
-        clearInterval(webSocketJoinInterval.current);
-      }
     };
   }, [party, isLeavingParty]);
 
-  // CORRECTION: WebSocket join automatique avec retry
+  // ✅ 1. D'ABORD déclarer les handlers - AVEC DEPENDANCES STABLES
   useEffect(() => {
-    if (isConnected && party?.id && !isUnmounting.current) {
-      console.log(`[PartyLobby] WebSocket connected, attempting to join party ${party.id}`);
-      
-      // Rejoindre immédiatement
-      if (!hasJoinedWebSocket.current) {
-        hasJoinedWebSocket.current = true;
-        wsJoinParty(party.id);
-      }
-
-      // CORRECTION: Retry périodique pour s'assurer de la connexion
-      webSocketJoinInterval.current = setInterval(() => {
-        if (isConnected && party?.id && !isUnmounting.current) {
-          console.log(`[PartyLobby] Periodic WebSocket join attempt for party ${party.id}`);
-          wsJoinParty(party.id);
-        }
-      }, 5000); // Retry toutes les 5 secondes
-
-      return () => {
-        if (webSocketJoinInterval.current) {
-          clearInterval(webSocketJoinInterval.current);
-        }
-      };
-    }
-  }, [isConnected, party?.id, wsJoinParty]);
-
-  useEffect(() => {
-    // WebSocket event handlers avec DEBUG
+    console.log('[PartyLobby] 📡 Setting up WebSocket handlers');
+    
     on('party_state', (data) => {
-      console.log('[PartyLobby] Received party_state:', data);
+      console.log('[PartyLobby] 📥 party_state:', data);
       if (!isUnmounting.current) {
         setParty(data.party);
         setPlayers(data.players || []);
@@ -115,16 +94,23 @@ const PartyLobby = () => {
     });
 
     on('player_joined', (data) => {
-      console.log('[PartyLobby] Player joined:', data);
+      console.log('[PartyLobby] 📥 player_joined:', data);
       if (!isUnmounting.current) {
-        // CORRECTION: Utiliser la liste complète des joueurs
         setPlayers(data.players || []);
         setParty(prev => prev ? { ...prev, players: data.players } : null);
       }
     });
 
     on('player_left', (data) => {
-      console.log('[PartyLobby] Player left:', data);
+      console.log('[PartyLobby] 📥 player_left:', data);
+      if (!isUnmounting.current) {
+        setPlayers(data.players || []);
+        setParty(prev => prev ? { ...prev, players: data.players } : null);
+      }
+    });
+
+    on('party_updated', (data) => {
+      console.log('[PartyLobby] 📥 party_updated:', data);
       if (!isUnmounting.current) {
         setPlayers(data.players || []);
         setParty(prev => prev ? { ...prev, players: data.players } : null);
@@ -132,22 +118,20 @@ const PartyLobby = () => {
     });
 
     on('game_started', (data) => {
-      console.log('[PartyLobby] Game started event received:', data);
+      console.log('[PartyLobby] 🎮 GAME STARTED EVENT:', data);
+      console.log('[PartyLobby] 🎮 isUnmounting:', isUnmounting.current);
       if (!isUnmounting.current) {
-        console.log(`[PartyLobby] Navigating to game ${data.gameId}`);
         setIsStartingGame(false);
-        
-        // CORRECTION: Petit délai pour s'assurer que la navigation fonctionne
-        setTimeout(() => {
-          navigate(`/game/${data.gameId}`);
-        }, 100);
+        console.log('[PartyLobby] 🎮 Navigating to game:', data.gameId);
+        // ✅ Navigation immédiate sans délai
+        navigate(`/game/${data.gameId}`);
       } else {
-        console.log('[PartyLobby] Ignoring game_started - component is unmounting');
+        console.log('[PartyLobby] ⚠️ Ignoring game_started - unmounting');
       }
     });
 
     on('error', (data) => {
-      console.error('[PartyLobby] WebSocket error:', data);
+      console.log('[PartyLobby] ❌ WebSocket error:', data);
       if (!isUnmounting.current) {
         setError(data.message);
         setIsStartingGame(false);
@@ -155,26 +139,40 @@ const PartyLobby = () => {
     });
 
     return () => {
-      console.log('[PartyLobby] Cleaning up WebSocket event handlers');
+      console.log('[PartyLobby] 🧹 Cleaning up handlers');
       off('party_state');
       off('player_joined');
       off('player_left');
+      off('party_updated');
       off('game_started');
       off('error');
     };
-  }, [navigate, on, off]);
+  }, []); // ✅ DEPENDANCES VIDES pour éviter les re-renders
+
+  // ✅ 2. ENSUITE rejoindre la party
+  useEffect(() => {
+    if (isConnected && party?.partyId && !hasJoinedWebSocket.current) {
+      console.log('[PartyLobby] 🔗 Joining party via WebSocket:', party.partyId);
+      hasJoinedWebSocket.current = true;
+      wsJoinParty(party.partyId);
+    }
+  }, [isConnected, party?.partyId, wsJoinParty]);
 
   const loadPartyInfo = async () => {
     if (!partyCode) return;
     
     try {
-      console.log(`[PartyLobby] Loading party info for code: ${partyCode}`);
       const partyInfo = await getPartyInfo(partyCode);
-      setParty(partyInfo);
-      setPlayers(partyInfo.players || []);
-      console.log('[PartyLobby] Party info loaded:', partyInfo);
+      
+      // ✅ Mapping pour gérer si le backend retourne 'id' au lieu de 'partyId'
+      const normalizedParty = {
+        ...partyInfo,
+        partyId: partyInfo.partyId ?? (partyInfo as any).id
+      };
+      
+      setParty(normalizedParty);
+      setPlayers(normalizedParty.players || []);
     } catch (err: any) {
-      console.error('[PartyLobby] Error loading party:', err);
       setError(err.message || 'Failed to load party information');
     } finally {
       setIsLoading(false);
@@ -201,7 +199,11 @@ const PartyLobby = () => {
       return;
     }
 
-    // CORRECTION: Vérifier les joueurs de la DB, pas WebSocket
+    if (!party.partyId) {
+      setError('Invalid party data: partyId missing');
+      return;
+    }
+
     const totalPlayers = party.players?.length || 0;
     if (totalPlayers < 2) {
       setError('At least 2 players are required to start the game');
@@ -212,28 +214,22 @@ const PartyLobby = () => {
     setError('');
 
     try {
-      console.log(`[PartyLobby] Starting game for party ${party.id} with ${totalPlayers} players`);
-      
-      // CORRECTION: Forcer un refresh des joueurs avant de commencer
-      await loadPartyInfo();
-      
-      startGame(party.id, {
+      console.log('[PartyLobby] 🎮 Starting game for party:', party.partyId);
+      startGame(party.partyId, {
         roundsNumber,
         time,
         map: selectedMap
       });
       
-      // CORRECTION: Timeout de sécurité pour éviter le loading infini
+      // ✅ Timeout de sécurité réduit
       setTimeout(() => {
         if (isStartingGame) {
-          console.warn('[PartyLobby] Game start timeout, stopping loader');
           setIsStartingGame(false);
           setError('Game start timed out. Please try again.');
         }
-      }, 10000); // 10 secondes
+      }, 5000);
       
     } catch (err: any) {
-      console.error('[PartyLobby] Error starting game:', err);
       setError(err.message || 'Failed to start game');
       setIsStartingGame(false);
     }
@@ -250,26 +246,11 @@ const PartyLobby = () => {
       await leaveParty(partyCode);
       navigate('/party-play');
     } catch (err: any) {
-      console.error('[PartyLobby] Error leaving party:', err);
       setError(err.message || 'Failed to leave party');
       setIsLeavingParty(false);
       isUnmounting.current = false;
     }
   };
-
-  // CORRECTION: Refresh périodique des données
-  useEffect(() => {
-    if (party && !isUnmounting.current) {
-      const refreshInterval = setInterval(() => {
-        if (!isStartingGame && !isLeavingParty) {
-          console.log('[PartyLobby] Periodic refresh of party data');
-          loadPartyInfo();
-        }
-      }, 10000); // Refresh toutes les 10 secondes
-
-      return () => clearInterval(refreshInterval);
-    }
-  }, [party, isStartingGame, isLeavingParty]);
 
   if (isLoading) {
     return (
@@ -304,7 +285,6 @@ const PartyLobby = () => {
   }
 
   const isAdmin = user?.id === party.admin.id;
-  // CORRECTION: Priorité à la DB, fallback sur WebSocket
   const displayPlayers = party.players && party.players.length > 0 ? party.players : players;
   const playerCount = displayPlayers.length;
 
