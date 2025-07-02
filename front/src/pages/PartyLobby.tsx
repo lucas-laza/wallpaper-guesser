@@ -35,7 +35,6 @@ const PartyLobby = () => {
   const [isStartingGame, setIsStartingGame] = useState(false);
   const [isLeavingParty, setIsLeavingParty] = useState(false);
 
-  // Game settings
   const [showSettings, setShowSettings] = useState(false);
   const [roundsNumber, setRoundsNumber] = useState(3);
   const [time, setTime] = useState(60);
@@ -44,11 +43,9 @@ const PartyLobby = () => {
 
   const maps = ['World', 'Europe', 'Asia', 'Americas', 'Africa', 'Oceania'];
   
-  // Refs pour gérer les états
   const hasJoinedWebSocket = useRef(false);
   const isUnmounting = useRef(false);
 
-  // ✅ Hook WebSocket SIMPLIFIÉ - plus de boucles
   const { isConnected, error: wsError, on, off, joinParty: wsJoinParty, startGame, leaveParty: wsLeaveParty } = useWebSocket(
     undefined,
     (data) => {
@@ -80,7 +77,6 @@ const PartyLobby = () => {
     };
   }, [party, isLeavingParty]);
 
-  // ✅ 1. D'ABORD déclarer les handlers - AVEC DEPENDANCES STABLES
   useEffect(() => {
     console.log('[PartyLobby] 📡 Setting up WebSocket handlers');
     
@@ -123,7 +119,6 @@ const PartyLobby = () => {
       if (!isUnmounting.current) {
         setIsStartingGame(false);
         console.log('[PartyLobby] 🎮 Navigating to game:', data.gameId);
-        // ✅ Navigation immédiate sans délai
         navigate(`/game/${data.gameId}`);
       } else {
         console.log('[PartyLobby] ⚠️ Ignoring game_started - unmounting');
@@ -147,9 +142,8 @@ const PartyLobby = () => {
       off('game_started');
       off('error');
     };
-  }, []); // ✅ DEPENDANCES VIDES pour éviter les re-renders
+  }, []);
 
-  // ✅ 2. ENSUITE rejoindre la party
   useEffect(() => {
     if (isConnected && party?.partyId && !hasJoinedWebSocket.current) {
       console.log('[PartyLobby] 🔗 Joining party via WebSocket:', party.partyId);
@@ -164,7 +158,6 @@ const PartyLobby = () => {
     try {
       const partyInfo = await getPartyInfo(partyCode);
       
-      // ✅ Mapping pour gérer si le backend retourne 'id' au lieu de 'partyId'
       const normalizedParty = {
         ...partyInfo,
         partyId: partyInfo.partyId ?? (partyInfo as any).id
@@ -221,7 +214,6 @@ const PartyLobby = () => {
         map: selectedMap
       });
       
-      // ✅ Timeout de sécurité réduit
       setTimeout(() => {
         if (isStartingGame) {
           setIsStartingGame(false);
