@@ -49,9 +49,8 @@ const PartyLobby = () => {
   const { isConnected, error: wsError, on, off, joinParty: wsJoinParty, startGame, leaveParty: wsLeaveParty } = useWebSocket(
     undefined,
     (data) => {
-      if (!isUnmounting.current) {
-        setPlayers(data.players || []);
-      }
+      console.log('[PartyLobby] 📥 WebSocket callback - updating players:', data.players);
+      setPlayers(data.players || []);
     }
   );
 
@@ -82,55 +81,38 @@ const PartyLobby = () => {
     
     on('party_state', (data) => {
       console.log('[PartyLobby] 📥 party_state:', data);
-      if (!isUnmounting.current) {
-        setParty(data.party);
-        setPlayers(data.players || []);
-        setIsLoading(false);
-      }
+      setParty(data.party);
+      setPlayers(data.players || []);
+      setIsLoading(false);
     });
 
     on('player_joined', (data) => {
       console.log('[PartyLobby] 📥 player_joined:', data);
-      if (!isUnmounting.current) {
-        setPlayers(data.players || []);
-        setParty(prev => prev ? { ...prev, players: data.players } : null);
-      }
+      setPlayers(data.players || []);
+      setParty(prev => prev ? { ...prev, ...data.party } : null);
     });
 
     on('player_left', (data) => {
       console.log('[PartyLobby] 📥 player_left:', data);
-      if (!isUnmounting.current) {
-        setPlayers(data.players || []);
-        setParty(prev => prev ? { ...prev, players: data.players } : null);
-      }
+      setPlayers(data.players || []);
+      setParty(prev => prev ? { ...prev, players: data.players } : null);
     });
 
     on('party_updated', (data) => {
       console.log('[PartyLobby] 📥 party_updated:', data);
-      if (!isUnmounting.current) {
-        setPlayers(data.players || []);
-        setParty(prev => prev ? { ...prev, players: data.players } : null);
-      }
+      setPlayers(data.players || []);
     });
 
     on('game_started', (data) => {
       console.log('[PartyLobby] 🎮 GAME STARTED EVENT:', data);
-      console.log('[PartyLobby] 🎮 isUnmounting:', isUnmounting.current);
-      if (!isUnmounting.current) {
-        setIsStartingGame(false);
-        console.log('[PartyLobby] 🎮 Navigating to game:', data.gameId);
-        navigate(`/game/${data.gameId}`);
-      } else {
-        console.log('[PartyLobby] ⚠️ Ignoring game_started - unmounting');
-      }
+      setIsStartingGame(false);
+      navigate(`/game/${data.gameId}`);
     });
 
     on('error', (data) => {
       console.log('[PartyLobby] ❌ WebSocket error:', data);
-      if (!isUnmounting.current) {
-        setError(data.message);
-        setIsStartingGame(false);
-      }
+      setError(data.message);
+      setIsStartingGame(false);
     });
 
     return () => {
@@ -142,7 +124,7 @@ const PartyLobby = () => {
       off('game_started');
       off('error');
     };
-  }, []);
+  }, [on, off, navigate]);
 
   useEffect(() => {
     if (isConnected && party?.partyId && !hasJoinedWebSocket.current) {
@@ -197,7 +179,7 @@ const PartyLobby = () => {
       return;
     }
 
-    const totalPlayers = party.players?.length || 0;
+    const totalPlayers = players.length;
     if (totalPlayers < 2) {
       setError('At least 2 players are required to start the game');
       return;
@@ -277,8 +259,10 @@ const PartyLobby = () => {
   }
 
   const isAdmin = user?.id === party.admin.id;
-  const displayPlayers = party.players && party.players.length > 0 ? party.players : players;
-  const playerCount = displayPlayers.length;
+  const playerCount = players.length;
+
+  console.log('[PartyLobby] 🎭 Current players state:', players);
+  console.log('[PartyLobby] 🎭 Current playerCount:', playerCount);
 
   return (
     <BackgroundImage src="https://images.pexels.com/photos/1435752/pexels-photo-1435752.jpeg?auto=compress&cs=tinysrgb&w=1920&h=1080&fit=crop">
@@ -356,7 +340,7 @@ const PartyLobby = () => {
                 </div>
 
                 <div className="space-y-3">
-                  {displayPlayers.map((player) => (
+                  {players.map((player) => (
                     <div
                       key={player.id}
                       className="flex items-center justify-between p-3 bg-white/5 rounded-lg border border-white/10"

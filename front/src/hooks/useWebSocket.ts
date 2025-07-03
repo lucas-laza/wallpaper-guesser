@@ -23,6 +23,31 @@ export const useWebSocket = (
   const eventHandlers = useRef<Partial<WebSocketEvents>>({});
   const initialized = useRef(false);
 
+  const attachEventHandlers = (socket: Socket) => {
+    console.log('[useWebSocket] Attaching event handlers');
+    
+    Object.entries(eventHandlers.current).forEach(([event, handler]) => {
+      if (handler) {
+        console.log(`[useWebSocket] Attaching handler for: ${event}`);
+        socket.on(event, handler);
+      }
+    });
+
+    if (setPartyState) {
+      socket.on('party_updated', setPartyState);
+    }
+
+    socket.on('game_started', (data) => {
+      console.log('🎮 [useWebSocket] game_started received:', data);
+      if (data.gameId) {
+        console.log('🎮 [useWebSocket] Navigating to:', `/game/${data.gameId}`);
+        navigate(`/game/${data.gameId}`);
+      } else {
+        console.error('🎮 [useWebSocket] No gameId in game_started data');
+      }
+    });
+  };
+
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -33,6 +58,8 @@ export const useWebSocket = (
       return;
     }
 
+    console.log('[useWebSocket] Initializing WebSocket connection');
+
     const newSocket = io(url, {
       auth: { token },
       transports: ['polling'],
@@ -42,55 +69,44 @@ export const useWebSocket = (
     });
 
     newSocket.on('connect', () => {
+      console.log('[useWebSocket] Connected to WebSocket server');
       setIsConnected(true);
       setError(null);
+      
+      attachEventHandlers(newSocket);
     });
 
     newSocket.on('disconnect', () => {
+      console.log('[useWebSocket] Disconnected from WebSocket server');
       setIsConnected(false);
     });
 
     newSocket.on('connect_error', (err) => {
+      console.error('[useWebSocket] Connection error:', err);
       setError(err.message);
       setIsConnected(false);
-    });
-
-    if (setPartyState) {
-      newSocket.on('party_updated', setPartyState);
-    }
-
-    newSocket.on('game_started', (data) => {
-      console.log('🎮 [useWebSocket] game_started received:', data);
-      if (data.gameId) {
-        console.log('🎮 [useWebSocket] Navigating to:', `/game/${data.gameId}`);
-        navigate(`/game/${data.gameId}`);
-      } else {
-        console.error('🎮 [useWebSocket] No gameId in game_started data');
-      }
-    });
-
-    Object.entries(eventHandlers.current).forEach(([event, handler]) => {
-      if (handler) {
-        newSocket.on(event, handler);
-      }
     });
 
     setSocket(newSocket);
 
     return () => {
+      console.log('[useWebSocket] Cleaning up WebSocket connection');
       newSocket.close();
       initialized.current = false;
     };
   }, []);
 
   const on = <K extends keyof WebSocketEvents>(event: K, handler: WebSocketEvents[K]) => {
+    console.log(`[useWebSocket] Registering handler for: ${event}`);
     eventHandlers.current[event] = handler;
+    
     if (socket && isConnected) {
       socket.on(event as string, handler);
     }
   };
 
   const off = (event: keyof WebSocketEvents) => {
+    console.log(`[useWebSocket] Removing handler for: ${event}`);
     delete eventHandlers.current[event];
     if (socket) {
       socket.off(event as string);
@@ -99,7 +115,10 @@ export const useWebSocket = (
 
   const emit = (event: string, data?: any) => {
     if (socket && isConnected) {
+      console.log(`[useWebSocket] Emitting: ${event}`, data);
       socket.emit(event, data);
+    } else {
+      console.warn(`[useWebSocket] Cannot emit ${event} - socket not connected`);
     }
   };
 
