@@ -4,12 +4,14 @@ import { Settings, User, LogOut } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import LoginModal from './LoginModal';
+import SettingsModal from './SettingsModal';
 
 const Header = () => {
   const location = useLocation();
   const { user, isAuthenticated, logout } = useAuth();
   const { currentTheme } = useTheme();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -80,6 +82,42 @@ const Header = () => {
                   ></div>
                 )}
               </Link>
+              <Link
+                to="/stats"
+                className="flex items-center relative transition-colors duration-200 text-white hover:text-white/80"
+              >
+                <div 
+                  className="w-1.5 h-1.5 rounded-full mr-2"
+                  style={{ 
+                    backgroundColor: isActive('/stats') ? currentTheme.accent : `${currentTheme.accent}66`
+                  }}
+                ></div>
+                Statistiques
+                {isActive('/stats') && (
+                  <div 
+                    className="absolute -bottom-1 left-0 right-0 h-0.5 transform origin-left animate-nav-underline"
+                    style={{ backgroundColor: currentTheme.accent }}
+                  ></div>
+                )}
+              </Link>
+              <Link
+                to="/history"
+                className="flex items-center relative transition-colors duration-200 text-white hover:text-white/80"
+              >
+                <div 
+                  className="w-1.5 h-1.5 rounded-full mr-2"
+                  style={{ 
+                    backgroundColor: isActive('/history') ? currentTheme.accent : `${currentTheme.accent}66`
+                  }}
+                ></div>
+                Historique
+                {isActive('/history') && (
+                  <div 
+                    className="absolute -bottom-1 left-0 right-0 h-0.5 transform origin-left animate-nav-underline"
+                    style={{ backgroundColor: currentTheme.accent }}
+                  ></div>
+                )}
+              </Link>
             </nav>
 
             {/* User Actions */}
@@ -115,7 +153,7 @@ const Header = () => {
               {/* Settings Button */}
               <button
                 className="flex items-center justify-center w-10 h-10 rounded-full border border-white/30 text-white hover:bg-white/10 hover:border-white/50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg"
-                onClick={() => {/* Handle settings */}}
+                onClick={() => setIsSettingsModalOpen(true)}
               >
                 <Settings size={18} />
               </button>
@@ -128,6 +166,11 @@ const Header = () => {
       <LoginModal 
         isOpen={isLoginModalOpen} 
         onClose={() => setIsLoginModalOpen(false)} 
+      />
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
       />
     </>
   );

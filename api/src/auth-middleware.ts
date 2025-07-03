@@ -7,6 +7,7 @@ export interface AuthenticatedRequest extends express.Request {
     userId: number;
     email: string;
     name: string;
+    role: string;
   };
 }
 

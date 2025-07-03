@@ -18,20 +18,24 @@ export class User extends BaseEntity {
   @Column({ nullable: false })
   password!: string;
 
-  private static async createNew(name: string, email: string, _password: string) {
+  @Column({ nullable: false, default: 'user' })
+  role!: string;
+
+  private static async createNew(name: string, email: string, _password: string, role: string = 'user') {
     const user = new User();
     user.name = name;
     user.email = email;
     user.password = await User.hashPassword(_password);
-    await user.save()
-    return user
+    user.role = role;
+    await user.save();
+    return user;
   }
 
   static async getALL(){
     return await this.find();
   }
 
-  static async verifyUserCreation(_name: string, _email: string, _password: string, _repassword: string): Promise<any> {
+  static async verifyUserCreation(_name: string, _email: string, _password: string, _repassword: string, _role: string = 'user'): Promise<any> {
     // Validation des champs requis d'abord
     if (!_name || typeof _name !== 'string') {
       return {
@@ -116,7 +120,7 @@ export class User extends BaseEntity {
     }
 
     try {
-      return await User.createNew(_name, _email, _password);
+      return await User.createNew(_name, _email, _password, _role);
     } catch (error) {
       console.error("Error creating user:", error);
       return {
@@ -174,7 +178,7 @@ export class User extends BaseEntity {
         return null;
       }
 
-      const token = jwt.sign({ userId: user.id, email: user.email, name: user.name }, secretKey, { expiresIn: '1h' });
+      const token = jwt.sign({ userId: user.id, email: user.email, name: user.name, role: user.role }, secretKey, { expiresIn: '1h' });
 
       return token;
     } catch (error) {
@@ -183,7 +187,7 @@ export class User extends BaseEntity {
     }
   }
 
-  static getUserFromToken(token: string): { userId: number, email: string, name: string } | null {
+  static getUserFromToken(token: string): { userId: number, email: string, name: string, role: string } | null {
     if (!token || typeof token !== 'string') {
       return null;
     }
@@ -194,7 +198,7 @@ export class User extends BaseEntity {
     }
 
     try {
-      const decodedToken = jwt.verify(token, secretKey) as { userId: number, email: string, name: string };
+      const decodedToken = jwt.verify(token, secretKey) as { userId: number, email: string, name: string, role: string };
       return decodedToken;
     } catch (error) {
       // En cas d'erreur lors du décodage du token

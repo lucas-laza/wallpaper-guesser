@@ -10,6 +10,8 @@ import PartyPlay from './pages/PartyPlay';
 import PartyLobby from './pages/PartyLobby';
 import Settings from './pages/Settings';
 import Game from './pages/Game';
+import StatsPage from './pages/Stats';
+import HistoryPage from './pages/History';
 import { checkActiveGame, ActiveGameInfo } from './services/api';
 import { Play, X } from 'lucide-react';
 
@@ -112,8 +114,8 @@ const ActiveGameChecker = () => {
 const AppContent = () => {
   const location = useLocation();
   
-  // Ne pas afficher le header sur les pages de jeu et lobby de partie
-  const hideHeader = location.pathname.startsWith('/game/') || location.pathname.startsWith('/party/');
+  // Ne pas afficher le header uniquement sur les pages de jeu
+  const hideHeader = location.pathname.startsWith('/game/');
 
   return (
     <div className="min-h-screen relative">
@@ -125,6 +127,8 @@ const AppContent = () => {
         <Route path="/party/:partyCode" element={<PartyLobby />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/game/:gameId" element={<Game />} />
+        <Route path="/stats" element={<StatsPage />} />
+        <Route path="/history" element={<HistoryPage />} />
       </Routes>
       <ActiveGameChecker />
     </div>
