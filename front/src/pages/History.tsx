@@ -6,15 +6,25 @@ interface Player {
   name: string;
 }
 
+interface PartyInfo {
+  id: number;
+  code: string;
+  type: string;
+  created_at?: string;
+}
+
 interface GameHistory {
-  gameId: number;
-  createdAt?: string;
-  mode?: string;
-  map?: string;
-  score?: number;
+  id: number;
   status?: string;
-  isWinner?: boolean;
+  gamemode?: string;
+  map?: string;
+  roundsNumber?: number;
+  time?: number;
   players?: Player[];
+  party?: PartyInfo | null;
+  winner?: Player | null;
+  isSolo?: boolean;
+  score?: number;
 }
 
 const HistoryPage = () => {
@@ -57,40 +67,50 @@ const HistoryPage = () => {
                   <th className="py-2 px-3 text-left text-xs uppercase tracking-wider">Mode</th>
                   <th className="py-2 px-3 text-left text-xs uppercase tracking-wider">Map</th>
                   <th className="py-2 px-3 text-left text-xs uppercase tracking-wider">Score</th>
-                  <th className="py-2 px-3 text-left text-xs uppercase tracking-wider">Statut</th>
+                  <th className="py-2 px-3 text-left text-xs uppercase tracking-wider">{games.some(g => g.party && g.party.type === 'private') ? 'Statut' : ''}</th>
                   <th className="py-2 px-3 text-left text-xs uppercase tracking-wider">Participants</th>
                 </tr>
               </thead>
               <tbody>
-                {games.map((g, idx) => (
-                  <tr
-                    key={g.gameId}
-                    className={`border-b border-white/10 hover:bg-white/10 transition ${idx % 2 === 0 ? 'even:bg-white/5' : ''}`}
-                  >
-                    <td className="py-3 px-3">{g.createdAt ? new Date(g.createdAt).toLocaleString() : '-'}</td>
-                    <td className="py-3 px-3">{g.mode || '-'}</td>
-                    <td className="py-3 px-3">{g.map || '-'}</td>
-                    <td className="py-3 px-3">{g.score ?? '-'}</td>
-                    <td className="py-3 px-3">
-                      {g.status === 'completed' ? (
-                        g.isWinner ? (
-                          <span className="bg-green-500/20 text-green-400 font-bold px-2 py-1 rounded">Gagné</span>
-                        ) : (
-                          <span className="bg-red-500/20 text-red-400 font-bold px-2 py-1 rounded">Perdu</span>
-                        )
-                      ) : (
-                        <span className="bg-yellow-500/20 text-yellow-400 font-bold px-2 py-1 rounded">{g.status || '-'}</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3">
-                      {g.players
-                        ? g.players.length > 3
-                          ? `${g.players.slice(0, 3).map((p: Player) => p.name).join(', ')} +${g.players.length - 3}`
-                          : g.players.map((p: Player) => p.name).join(', ')
-                        : '-'}
-                    </td>
-                  </tr>
-                ))}
+                {games.map((g, idx) => {
+                  const isMulti = g.party && g.party.type === 'private';
+                  const isWinner = g.winner && g.winner.name === (g.players && g.players[0]?.name);
+                  return (
+                    <tr
+                      key={g.id}
+                      className={`border-b border-white/10 hover:bg-white/10 transition ${idx % 2 === 0 ? 'even:bg-white/5' : ''}`}
+                    >
+                      <td className="py-3 px-3">{g.party?.created_at ? new Date(g.party.created_at).toLocaleString() : '-'}</td>
+                      <td className="py-3 px-3">{g.gamemode || '-'}</td>
+                      <td className="py-3 px-3">{g.map || '-'}</td>
+                      <td className="py-3 px-3">{g.score ?? '-'}</td>
+                      {isMulti ? (
+                        <td className="py-3 px-3">
+                          {g.status === 'completed' ? (
+                            g.winner ? (
+                              isWinner ? (
+                                <span className="bg-green-500/20 text-green-400 font-bold px-2 py-1 rounded">Victoire</span>
+                              ) : (
+                                <span className="bg-red-500/20 text-red-400 font-bold px-2 py-1 rounded">Défaite</span>
+                              )
+                            ) : (
+                              <span className="bg-yellow-500/20 text-yellow-400 font-bold px-2 py-1 rounded">Terminé</span>
+                            )
+                          ) : (
+                            <span className="bg-yellow-500/20 text-yellow-400 font-bold px-2 py-1 rounded">{g.status || '-'}</span>
+                          )}
+                        </td>
+                      ) : null}
+                      <td className="py-3 px-3">
+                        {g.players
+                          ? g.players.length > 3
+                            ? `${g.players.slice(0, 3).map((p: Player) => p.name).join(', ')} +${g.players.length - 3}`
+                            : g.players.map((p: Player) => p.name).join(', ')
+                          : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -12,6 +12,7 @@ import Settings from './pages/Settings';
 import Game from './pages/Game';
 import StatsPage from './pages/Stats';
 import HistoryPage from './pages/History';
+import Profile from './pages/Profile';
 import { checkActiveGame, ActiveGameInfo } from './services/api';
 import { Play, X } from 'lucide-react';
 
@@ -129,6 +130,7 @@ const AppContent = () => {
         <Route path="/game/:gameId" element={<Game />} />
         <Route path="/stats" element={<StatsPage />} />
         <Route path="/history" element={<HistoryPage />} />
+        <Route path="/profile" element={<Profile />} />
       </Routes>
       <ActiveGameChecker />
     </div>
