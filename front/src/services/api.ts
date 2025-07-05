@@ -35,6 +35,11 @@ export interface ActiveGameInfo {
   map?: string;
   time?: number;
   isCompleted?: boolean;
+  partyId?: number | null;
+  isMultiplayer?: boolean;
+  totalPlayers?: number;
+  playersFinished?: number;
+  waitingForPlayers?: boolean;
   roundData?: {
     id: number;
     relative_id: number;
@@ -49,7 +54,7 @@ export interface ActiveGameInfo {
 }
 
 export interface Party {
-  partyId: number;
+  id: number;
   code: string;
   admin: User;
   players: User[];
@@ -90,6 +95,10 @@ export interface GuessResult {
   userGuess: {
     country: string;
   };
+  isMultiplayer?: boolean;
+  roundComplete?: boolean;
+  waitingPlayers?: number;
+  totalPlayers?: number;
 }
 
 export interface Map {
@@ -314,4 +323,221 @@ export const getAvailableMaps = async (): Promise<Map[]> => {
 
 export const getCountryTags = async (): Promise<CountryList> => {
   return apiRequest('/wallpaper/tags');
+};
+
+// Nouveaux types pour la synchronisation
+export interface SyncGuessResult extends GuessResult {
+  isMultiplayer?: boolean;
+  roundComplete?: boolean;
+  waitingPlayers?: number;
+  totalPlayers?: number;
+}
+
+export interface GameSyncState {
+  isSynchronized: boolean;
+  gameId?: number;
+  currentRound?: number;
+  playersFinished?: number;
+  allPlayersFinished?: boolean;
+  playersReady?: number;
+  totalPlayers?: number;
+}
+
+export interface PlayerStatus {
+  playerId: number;
+  playerName: string;
+  completedRounds: number;
+  hasFinished: boolean;
+}
+
+export interface WaitingStatus {
+  gameId: number;
+  totalPlayers: number;
+  playersStillPlaying: number;
+  allPlayersFinished: boolean;
+  playerStatuses: PlayerStatus[];
+  totalRounds: number;
+}
+
+export interface FinishGameResult {
+  message: string;
+  gameId: number;
+  status: string;
+  allPlayersFinished: boolean;
+  playersStillPlaying?: number;
+  winner?: {
+    id: number;
+    name: string;
+  };
+}
+
+// Nouvelles fonctions API pour la synchronisation multijoueur
+
+// Soumet une réponse avec synchronisation (pour le multijoueur)
+export const submitGuessWithSync = async (
+  gameId: number,
+  relativeId: number,
+  guess: { country: string }
+): Promise<SyncGuessResult> => {
+  return apiRequest(`/game/game/${gameId}/round/${relativeId}/guess-sync`, {
+    method: 'POST',
+    body: JSON.stringify(guess),
+  });
+};
+
+// Marque un joueur comme prêt pour le round suivant
+export const markPlayerReady = async (gameId: number): Promise<{
+  message: string;
+  allPlayersReady: boolean;
+  gameId: number;
+  userId: number;
+}> => {
+  return apiRequest(`/game/game/${gameId}/ready-next-round`, {
+    method: 'POST',
+  });
+};
+
+// Obtient l'état de synchronisation d'une partie
+export const getGameSyncState = async (gameId: number): Promise<GameSyncState> => {
+  return apiRequest(`/game/game/${gameId}/sync-state`);
+};
+
+// Obtient les résultats d'un round spécifique
+export const getRoundResults = async (gameId: number, relativeId: number): Promise<{
+  roundId: number;
+  results: Array<{
+    playerId: number;
+    playerName: string;
+    result: GuessResult;
+  }>;
+  totalPlayers: number;
+}> => {
+  return apiRequest(`/game/game/${gameId}/round/${relativeId}/results`);
+};
+
+// Termine une partie avec vérification de synchronisation
+export const finishGameWithSync = async (gameId: number): Promise<FinishGameResult> => {
+  return apiRequest(`/game/game/${gameId}/finish-sync`, {
+    method: 'POST',
+  });
+};
+
+// Vérifie si tous les joueurs ont terminé
+export const checkAllPlayersFinished = async (gameId: number): Promise<{
+  gameId: number;
+  allPlayersFinished: boolean;
+  totalPlayers: number;
+}> => {
+  return apiRequest(`/game/game/${gameId}/all-players-finished`);
+};
+
+// Obtient le statut d'attente d'une partie
+export const getWaitingStatus = async (gameId: number): Promise<WaitingStatus> => {
+  return apiRequest(`/game/game/${gameId}/waiting-status`);
+};
+
+// Fonction modifiée pour soumettre une réponse (détecte automatiquement solo vs multijoueur)
+export const submitGuessAuto = async (
+  gameId: number,
+  relativeId: number,
+  guess: { country: string }
+): Promise<GuessResult | SyncGuessResult> => {
+  try {
+    // Tenter d'abord la version synchronisée
+    const syncResult = await submitGuessWithSync(gameId, relativeId, guess);
+    return syncResult;
+  } catch (error) {
+    // Si ça échoue, utiliser la version classique (solo)
+    return submitGuess(gameId, relativeId, guess);
+  }
+};
+
+// Fonction pour détecter si une partie est multijoueur
+export const isMultiplayerGame = async (gameId: number): Promise<boolean> => {
+  try {
+    const syncState = await getGameSyncState(gameId);
+    return syncState.isSynchronized;
+  } catch (error) {
+    return false;
+  }
+};
+
+// Fonction pour obtenir les informations complètes d'une partie avec état de synchronisation
+export const getGameInfoWithSync = async (gameId: number): Promise<{
+  gameInfo: any;
+  syncState: GameSyncState;
+  waitingStatus?: WaitingStatus;
+}> => {
+  const gameInfo = await getGameInfo(gameId);
+  const syncState = await getGameSyncState(gameId);
+  
+  let waitingStatus;
+  if (syncState.isSynchronized) {
+    waitingStatus = await getWaitingStatus(gameId);
+  }
+  
+  return {
+    gameInfo,
+    syncState,
+    waitingStatus
+  };
+};
+
+// Mise à jour de l'interface ActiveGameInfo pour inclure les infos multijoueur
+export interface ActiveGameInfo {
+  hasActiveGame: boolean;
+  gameId?: number;
+  currentRound?: number;
+  totalRounds?: number;
+  map?: string;
+  time?: number;
+  isCompleted?: boolean;
+  // Nouvelles propriétés pour le multijoueur
+  isMultiplayer?: boolean;
+  totalPlayers?: number;
+  partyId?: number;
+  playersFinished?: number;
+  waitingForPlayers?: boolean;
+  roundData?: {
+    id: number;
+    relative_id: number;
+    guesses: number;
+    wallpaper: {
+      id: number;
+      title: string;
+      image: string;
+      copyright: string;
+    };
+  };
+}
+
+// Fonction mise à jour pour vérifier une partie active avec infos multijoueur
+export const checkActiveGameWithSync = async (): Promise<ActiveGameInfo> => {
+  const activeGameInfo = await checkActiveGame();
+  
+  if (activeGameInfo.hasActiveGame && activeGameInfo.gameId) {
+    try {
+      const syncState = await getGameSyncState(activeGameInfo.gameId);
+      
+      if (syncState.isSynchronized) {
+        const waitingStatus = await getWaitingStatus(activeGameInfo.gameId);
+        
+        return {
+          ...activeGameInfo,
+          isMultiplayer: true,
+          totalPlayers: syncState.totalPlayers,
+          playersFinished: syncState.playersFinished,
+          waitingForPlayers: !syncState.allPlayersFinished
+        };
+      }
+    } catch (error) {
+      console.warn('Could not get sync state for active game:', error);
+    }
+  }
+  
+  return {
+    ...activeGameInfo,
+    isMultiplayer: false,
+    totalPlayers: 1
+  };
 };

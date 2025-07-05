@@ -3,13 +3,14 @@ import "reflect-metadata";
 import { DataSource } from "typeorm";
 import { Wallpaper } from "./Wallpaper";
 import { User } from "./User";
+import { Game } from "./Game";
+import { Party } from "./Party";
+import { Round } from "./Round";
+import { Guess } from "./Guess"; // Nouvelle entité
 import * as dotenv from 'dotenv';
 import { gameRouter } from "./GameController";
 import { authenticateToken, AuthenticatedRequest } from "./auth-middleware";
 import * as path from 'path';
-import { Game } from "./Game";
-import { Party } from "./Party";
-import { Round } from "./Round";
 import { WebSocketService } from "./WebSocketService";
 import { createServer } from 'http';
 import fetch from 'node-fetch';
@@ -24,7 +25,7 @@ const dataSource = new DataSource({
   username: process.env.DB_USER || "wallpaper_user",
   password: process.env.DB_PASSWORD || "wallpaper_password",
   database: process.env.DB_NAME || "wallpaper_guessr",
-  entities: [Wallpaper, User, Game, Party, Round],
+  entities: [Wallpaper, User, Game, Party, Round, Guess],
   synchronize: true,
   logging: false,
   charset: "utf8mb4",
@@ -60,6 +61,8 @@ async function main() {
 
   // Initialiser le service WebSocket
   const webSocketService = new WebSocketService(httpServer);
+
+  app.locals.webSocketService = webSocketService;
 
   app.use(cors({ origin: '*' }));
   app.use(express.json());

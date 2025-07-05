@@ -4,6 +4,7 @@ import {
   Entity,
   ManyToOne,
   PrimaryGeneratedColumn,
+  CreateDateColumn,
 } from "typeorm";
 import { User } from "./User";
 import { Round } from "./Round";
@@ -32,4 +33,26 @@ export class Guess extends BaseEntity {
 
   @Column({ nullable: false })
   is_correct!: boolean;
+
+  @Column({ type: "int", default: 0 })
+  score!: number;
+
+  @CreateDateColumn()
+  created_at!: Date;
+
+  // Méthode utilitaire pour calculer le score
+  static calculateScore(isCorrect: boolean, timeRemaining?: number): number {
+    if (!isCorrect) return 0;
+    
+    // Score de base pour une réponse correcte
+    let baseScore = 1000;
+    
+    // Bonus basé sur le temps restant (optionnel)
+    if (timeRemaining && timeRemaining > 0) {
+      const timeBonus = Math.floor(timeRemaining * 10); // 10 points par seconde restante
+      baseScore += timeBonus;
+    }
+    
+    return baseScore;
+  }
 }

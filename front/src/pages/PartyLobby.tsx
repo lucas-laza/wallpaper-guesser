@@ -127,26 +127,22 @@ const PartyLobby = () => {
   }, [on, off, navigate]);
 
   useEffect(() => {
-    if (isConnected && party?.partyId && !hasJoinedWebSocket.current) {
-      console.log('[PartyLobby] 🔗 Joining party via WebSocket:', party.partyId);
+    if (isConnected && party?.id && !hasJoinedWebSocket.current) {
+      console.log('[PartyLobby] Joining party via WebSocket with ID:', party.id);
       hasJoinedWebSocket.current = true;
-      wsJoinParty(party.partyId);
+      wsJoinParty(party.id);
     }
-  }, [isConnected, party?.partyId, wsJoinParty]);
+  }, [isConnected, party?.id, wsJoinParty]);
 
   const loadPartyInfo = async () => {
     if (!partyCode) return;
     
     try {
       const partyInfo = await getPartyInfo(partyCode);
+      console.log('[PartyLobby] Party info received:', partyInfo);
       
-      const normalizedParty = {
-        ...partyInfo,
-        partyId: partyInfo.partyId ?? (partyInfo as any).id
-      };
-      
-      setParty(normalizedParty);
-      setPlayers(normalizedParty.players || []);
+      setParty(partyInfo);
+      setPlayers(partyInfo.players || []);
     } catch (err: any) {
       setError(err.message || 'Failed to load party information');
     } finally {
@@ -174,8 +170,8 @@ const PartyLobby = () => {
       return;
     }
 
-    if (!party.partyId) {
-      setError('Invalid party data: partyId missing');
+    if (!party.id) {
+      setError('Invalid party data: party ID missing');
       return;
     }
 
@@ -189,13 +185,10 @@ const PartyLobby = () => {
     setError('');
 
     try {
-      console.log('[PartyLobby] 🎮 Starting game for party:', party.partyId);
-      startGame(party.partyId, {
-        roundsNumber,
-        time,
-        map: selectedMap
-      });
+      console.log('[PartyLobby] Starting game for party:', party.id);
+      startGame(party.id, { roundsNumber, time, map: selectedMap });
       
+      // Timeout de sécurité si le jeu ne démarre pas
       setTimeout(() => {
         if (isStartingGame) {
           setIsStartingGame(false);
@@ -263,6 +256,10 @@ const PartyLobby = () => {
 
   console.log('[PartyLobby] 🎭 Current players state:', players);
   console.log('[PartyLobby] 🎭 Current playerCount:', playerCount);
+  console.log('[PartyLobby] Current party:', party);
+  console.log('[PartyLobby] Party ID:', party?.id);
+  console.log('[PartyLobby] Current players state:', players);
+  console.log('[PartyLobby] Current playerCount:', playerCount);
 
   return (
     <BackgroundImage src="https://images.pexels.com/photos/1435752/pexels-photo-1435752.jpeg?auto=compress&cs=tinysrgb&w=1920&h=1080&fit=crop">

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Clock, Target, ArrowRight, Home, Settings, X, Send } from 'lucide-react';
+import { Clock, Target, ArrowRight, Home, Settings, X, Send, Users, Timer } from 'lucide-react';
 import GlassCard from '../components/GlassCard';
 import CountryAutocomplete from '../components/CountryAutocomplete';
+import { useWebSocket } from '../hooks/useWebSocket';
 import { 
   Round, 
   GuessResult, 
@@ -11,8 +12,18 @@ import {
   finishGame, 
   quitActiveGame,
   checkActiveGame,
-  resumeGame 
+  resumeGame,
+  getGameInfo 
 } from '../services/api';
+
+interface SyncState {
+  isMultiplayer: boolean;
+  roundComplete: boolean;
+  totalPlayers: number;
+  playersFinished: number;
+  readyCount: number;
+  allPlayersReady: boolean;
+}
 
 const Game = () => {
   const { gameId } = useParams<{ gameId: string }>();
@@ -29,6 +40,20 @@ const Game = () => {
   const [error, setError] = useState('');
   const [selectedCountry, setSelectedCountry] = useState<string>('');
   const [isQuitting, setIsQuitting] = useState(false);
+  const [partyId, setPartyId] = useState<number | null>(null);
+  const [isReadyForNextRound, setIsReadyForNextRound] = useState(false);
+  const [roundResults, setRoundResults] = useState<any[]>([]);
+
+  const [syncState, setSyncState] = useState<SyncState>({
+    isMultiplayer: false,
+    roundComplete: false,
+    totalPlayers: 1,
+    playersFinished: 0,
+    readyCount: 0,
+    allPlayersReady: false
+  });
+
+  const { socket, isConnected, on, off, emit } = useWebSocket();
 
   useEffect(() => {
     if (gameId) {
@@ -36,21 +61,215 @@ const Game = () => {
     }
   }, [gameId]);
 
+useEffect(() => {
+  if (!socket || !isConnected) return;
+
+  const eventHandlers = {
+    player_finished_round: (data: any) => {
+      console.log('🎯 [Game] Player finished round:', data);
+      setSyncState(prev => ({
+        ...prev,
+        playersFinished: data.finishedCount,
+        totalPlayers: data.totalPlayers,
+        roundComplete: data.finishedCount === data.totalPlayers
+      }));
+
+      // CORRECTION 1: Auto-ready si TOUS les joueurs ont fini (pas seulement le dernier)
+      if (data.finishedCount === data.totalPlayers && guessResult && !isReadyForNextRound) {
+        console.log('[Game] 🤖 All players finished via player_finished_round = Auto-ready');
+        setTimeout(() => {
+          handleReadyForNextRound();
+        }, 1500);
+      }
+    },
+
+    round_completed: (data: any) => {
+      console.log('🏁 [Game] Round completed event received:', data);
+      setRoundResults(data.results);
+      
+      // CORRECTION 2: FORCER roundComplete à true quand on reçoit cet événement
+      setSyncState(prev => ({
+        ...prev,
+        roundComplete: true,
+        playersFinished: prev.totalPlayers // S'assurer que tous sont marqués comme finis
+      }));
+
+      // CORRECTION 3: Auto-ready IMMÉDIAT si on a une réponse
+      if (guessResult && !isReadyForNextRound) {
+        console.log('[Game] 🤖 Round completed event + has guess result = Auto-ready NOW');
+        setTimeout(() => {
+          handleReadyForNextRound();
+        }, 1000);
+      }
+    },
+
+    player_ready_update: (data: any) => {
+      console.log('✅ [Game] Player ready update:', data);
+      setSyncState(prev => ({
+        ...prev,
+        readyCount: data.readyCount,
+        totalPlayers: data.totalPlayers,
+        allPlayersReady: data.allPlayersReady
+      }));
+      
+      if (data.allPlayersReady) {
+        console.log('[Game] 🎉 All players ready - starting next round');
+        setTimeout(() => {
+          handleNextRoundTransition();
+        }, 1000);
+      }
+    },
+
+    round_started: (data: any) => {
+      console.log('🚀 [Game] Round started:', data);
+      setCurrentRoundNumber(data.roundNumber);
+      setTimeLeft(60);
+      setGuessResult(null);
+      setSelectedCountry('');
+      setIsReadyForNextRound(false);
+      setRoundResults([]);
+      setSyncState(prev => ({
+        ...prev,
+        roundComplete: false,
+        playersFinished: 0,
+        readyCount: 0,
+        allPlayersReady: false
+      }));
+      
+      loadRound(data.roundNumber);
+    },
+
+    game_finished: (data: any) => {
+      console.log('🎉 [Game] Game finished:', data);
+      setIsGameFinished(true);
+    },
+
+    guess_result: (data: any) => {
+      console.log('[Game] 🎲 Received guess result via WebSocket:', data);
+      setGuessResult(data);
+      setTotalScore(prev => prev + data.score);
+      
+      setSyncState(prev => ({
+        ...prev,
+        isMultiplayer: true,
+        roundComplete: data.roundComplete ?? false,
+        totalPlayers: data.totalPlayers ?? 1,
+        playersFinished: (data.totalPlayers ?? 1) - (data.waitingPlayers ?? 0)
+      }));
+      
+      setIsGuessing(false);
+
+      // CORRECTION 4: Auto-ready immédiat si le round est complet dans la réponse
+      if (data.roundComplete && !isReadyForNextRound) {
+        console.log('[Game] 🤖 Guess result shows round complete = Auto-ready');
+        setTimeout(() => {
+          handleReadyForNextRound();
+        }, 2000);
+      }
+    },
+
+    error: (data: any) => {
+      console.error('[Game] ❌ WebSocket error:', data);
+      setError(data.message);
+      setIsGuessing(false);
+    }
+  };
+
+  Object.entries(eventHandlers).forEach(([event, handler]) => {
+    socket.on(event, handler);
+  });
+
+  return () => {
+    Object.keys(eventHandlers).forEach(event => {
+      socket.off(event);
+    });
+  };
+}, [socket, isConnected, guessResult, isReadyForNextRound]);
+
+// CORRECTION 5: Auto-ready basé sur l'état - plus agressif
+useEffect(() => {
+  console.log('[Game] 🔍 Checking auto-ready conditions:', {
+    hasGuessResult: !!guessResult,
+    isMultiplayer: syncState.isMultiplayer,
+    roundComplete: syncState.roundComplete,
+    isReadyForNextRound: isReadyForNextRound,
+    playersFinished: syncState.playersFinished,
+    totalPlayers: syncState.totalPlayers
+  });
+
+  // CORRECTION 6: Conditions d'auto-ready élargies
+  if (guessResult && 
+      syncState.isMultiplayer && 
+      !isReadyForNextRound) {
+    
+    // Option 1: Tous les joueurs ont fini
+    if (syncState.playersFinished === syncState.totalPlayers) {
+      console.log('[Game] 🤖 Auto-ready: All players finished');
+      setTimeout(() => {
+        handleReadyForNextRound();
+      }, 1000);
+    }
+    // Option 2: Round marqué comme complet
+    else if (syncState.roundComplete) {
+      console.log('[Game] 🤖 Auto-ready: Round marked as complete');
+      setTimeout(() => {
+        handleReadyForNextRound();
+      }, 1500);
+    }
+  }
+}, [guessResult, syncState.isMultiplayer, syncState.roundComplete, syncState.playersFinished, syncState.totalPlayers, isReadyForNextRound]);
+
+// CORRECTION 7: Fallback auto-ready après 5 secondes si on a une réponse en multiplayer
+useEffect(() => {
+  if (!guessResult || !syncState.isMultiplayer || isReadyForNextRound) return;
+
+  const fallbackTimer = setTimeout(() => {
+    console.log('[Game] 🤖 Fallback auto-ready: 5 seconds elapsed with guess result');
+    if (!isReadyForNextRound) {
+      handleReadyForNextRound();
+    }
+  }, 5000);
+
+  return () => clearTimeout(fallbackTimer);
+}, [guessResult, syncState.isMultiplayer, isReadyForNextRound]);
+
   useEffect(() => {
     if (timeLeft > 0 && !guessResult && !isGameFinished) {
       const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
       return () => clearTimeout(timer);
     } else if (timeLeft === 0 && !guessResult) {
-      // Time's up - auto submit with empty guess
       handleGuessSubmit('');
     }
   }, [timeLeft, guessResult, isGameFinished]);
+
+  // CORRECTION: Auto-ready basé sur l'état complet
+  useEffect(() => {
+    console.log('[Game] 🔍 Checking auto-ready conditions:', {
+      hasGuessResult: !!guessResult,
+      isMultiplayer: syncState.isMultiplayer,
+      roundComplete: syncState.roundComplete,
+      isReadyForNextRound: isReadyForNextRound,
+      playersFinished: syncState.playersFinished,
+      totalPlayers: syncState.totalPlayers
+    });
+
+    // Auto-ready dès qu'on a une réponse ET que tous les joueurs ont fini
+    if (guessResult && 
+        syncState.isMultiplayer && 
+        !isReadyForNextRound &&
+        syncState.playersFinished === syncState.totalPlayers) {
+      
+      console.log('[Game] 🤖 Auto-ready: All players finished, marking as ready');
+      setTimeout(() => {
+        handleReadyForNextRound();
+      }, 1000);
+    }
+  }, [guessResult, syncState.isMultiplayer, syncState.roundComplete, syncState.playersFinished, syncState.totalPlayers, isReadyForNextRound]);
 
   const initializeGame = async () => {
     try {
       setError('');
       
-      // Vérifier s'il y a une partie active
       const activeGameInfo = await checkActiveGame();
       
       if (!activeGameInfo.hasActiveGame) {
@@ -59,36 +278,91 @@ const Game = () => {
       }
 
       if (activeGameInfo.gameId !== parseInt(gameId!)) {
-        // Rediriger vers la bonne partie active
         navigate(`/game/${activeGameInfo.gameId}`);
         return;
       }
 
-      // Configurer les informations de la partie
       setTotalRounds(activeGameInfo.totalRounds || 3);
       setCurrentRoundNumber(activeGameInfo.currentRound || 1);
       
-      // Si la partie est terminée
+      const isMultiplayer = activeGameInfo.isMultiplayer || (activeGameInfo.totalPlayers && activeGameInfo.totalPlayers > 1);
+      
+      let resolvedPartyId = activeGameInfo.partyId;
+      
+      if (!resolvedPartyId && isMultiplayer) {
+        try {
+          const gameInfo = await getGameInfo(parseInt(gameId!));
+          if (gameInfo.party && gameInfo.party.id) {
+            resolvedPartyId = gameInfo.party.id;
+          }
+        } catch (err) {
+          console.error('[Game] Failed to get party info from game:', err);
+        }
+      }
+      
+      setPartyId(resolvedPartyId || null);
+      
+      setSyncState(prev => ({
+        ...prev,
+        isMultiplayer: isMultiplayer || false,
+        totalPlayers: activeGameInfo.totalPlayers || 1
+      }));
+
+      if (isMultiplayer && resolvedPartyId) {
+        console.log(`[Game] 🎮 Multiplayer game detected, connecting WebSocket...`);
+        
+        const waitForConnection = () => {
+          return new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('WebSocket connection timeout'));
+            }, 10000);
+
+            const checkConnection = () => {
+              if (isConnected && socket) {
+                clearTimeout(timeout);
+                resolve();
+              } else {
+                setTimeout(checkConnection, 100);
+              }
+            };
+            
+            if (isConnected && socket) {
+              clearTimeout(timeout);
+              resolve();
+            } else {
+              checkConnection();
+            }
+          });
+        };
+        
+        try {
+          await waitForConnection();
+          console.log(`[Game] 📡 WebSocket connected, joining party ${resolvedPartyId}`);
+          socket.emit('join_party', { partyId: resolvedPartyId });
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (err) {
+          console.error('[Game] ❌ WebSocket connection failed:', err);
+          setError('Failed to connect to multiplayer session');
+          return;
+        }
+      }
+
       if (activeGameInfo.isCompleted) {
         setIsGameFinished(true);
         return;
       }
 
-      // Charger le round actuel
       if (activeGameInfo.roundData) {
         setCurrentRound(activeGameInfo.roundData);
         setTimeLeft(activeGameInfo.time || 60);
         
-        // Si ce round a déjà été joué, on peut passer au suivant ou finir
         if (activeGameInfo.roundData.guesses > 0) {
-          // Simuler le résultat pour permettre de passer au round suivant
-          // En réalité, il faudrait récupérer le vrai résultat depuis le backend
           setGuessResult({
             roundId: activeGameInfo.roundData.id,
             relative_id: activeGameInfo.roundData.relative_id,
             guessNumber: activeGameInfo.roundData.guesses,
-            isCorrect: false, // Placeholder
-            score: 0, // Placeholder
+            isCorrect: false,
+            score: 0,
             correctLocation: {
               country: { code: '', text: 'Unknown' },
               title: 'Unknown',
@@ -98,7 +372,6 @@ const Game = () => {
           });
         }
       } else {
-        // Charger le round manuellement
         await loadRound(activeGameInfo.currentRound || 1);
       }
       
@@ -113,7 +386,7 @@ const Game = () => {
       setError('');
       const round = await getRound(parseInt(gameId!), roundNumber);
       setCurrentRound(round);
-      setTimeLeft(60); // Reset timer
+      setTimeLeft(60);
       setGuessResult(null);
       setSelectedCountry('');
     } catch (err: any) {
@@ -126,20 +399,146 @@ const Game = () => {
   };
 
   const handleGuessSubmit = async (country: string) => {
-    if (!gameId || !currentRound || isGuessing) return;
+    if (!gameId || !currentRound || isGuessing) {
+      console.log('[Game] ⚠️ Cannot submit guess: missing requirements or already guessing');
+      return;
+    }
 
+    if (guessResult) {
+      console.log('[Game] ⚠️ Already have a guess result for this round');
+      return;
+    }
+
+    console.log('[Game] 🎯 Starting guess submission process');
     setIsGuessing(true);
+
     try {
-      const result = await submitGuess(parseInt(gameId), currentRound.relative_id, {
+      if (syncState.isMultiplayer && socket && isConnected && partyId) {
+        console.log('[Game] 📡 Submitting guess via WebSocket for multiplayer game');
+        
+        socket.emit('submit_guess', {
+          partyId: partyId,
+          gameId: parseInt(gameId),
+          relativeId: currentRound.relative_id,
+          country: country || selectedCountry
+        });
+        
+        // Timeout pour WebSocket
+        setTimeout(() => {
+          if (isGuessing && !guessResult) {
+            console.warn('[Game] ⚠️ WebSocket guess timeout, falling back to HTTP');
+            setIsGuessing(false);
+            handleHttpGuessSubmission(country);
+          }
+        }, 5000);
+        
+        return;
+      }
+
+      await handleHttpGuessSubmission(country);
+    } catch (error) {
+      console.error('[Game] ❌ Error in guess submission:', error);
+      setIsGuessing(false);
+      setError('Failed to submit guess. Please try again.');
+    }
+  };
+
+  const handleHttpGuessSubmission = async (country: string) => {
+    try {
+      console.log('[Game] 🌐 Submitting guess via HTTP API');
+      
+      if (guessResult) {
+        console.log('[Game] ⚠️ Already have a result, aborting HTTP submission');
+        setIsGuessing(false);
+        return;
+      }
+      
+      const result = await submitGuess(parseInt(gameId!), currentRound!.relative_id, {
         country: country || selectedCountry,
       });
-      
+    
       setGuessResult(result);
       setTotalScore(totalScore + result.score);
+    
+      if (result.isMultiplayer) {
+        setSyncState(prev => ({
+          ...prev,
+          isMultiplayer: true,
+          roundComplete: result.roundComplete ?? false,
+          totalPlayers: result.totalPlayers ?? 1,
+          playersFinished: (result.totalPlayers ?? 1) - (result.waitingPlayers ?? 0)
+        }));
+      }
     } catch (err: any) {
+      console.error('[Game] ❌ HTTP submission error:', err);
       setError(err.message);
     } finally {
       setIsGuessing(false);
+    }
+  };
+
+  const handleReadyForNextRound = async () => {
+    console.log('[Game] 🎯 Player requesting to be ready for next round');
+
+    if (!syncState.isMultiplayer) {
+      console.log('[Game] 📱 Solo game, proceeding directly');
+      handleNextRound();
+      return;
+    }
+    
+    if (isReadyForNextRound) {
+      console.log('[Game] ⚠️ Player already ready');
+      return;
+    }
+    
+    setIsReadyForNextRound(true);
+    
+    try {
+      let currentPartyId = partyId;
+      if (!currentPartyId) {
+        const gameInfo = await getGameInfo(parseInt(gameId!));
+        if (gameInfo.party && gameInfo.party.id) {
+          currentPartyId = gameInfo.party.id;
+          setPartyId(currentPartyId);
+        }
+      }
+      
+      // API call pour marquer comme ready
+      const response = await fetch(`http://localhost:3300/game/game/${gameId}/ready-next-round`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      console.log('[Game] ✅ Ready API response:', result);
+      
+      // WebSocket pour notifier les autres joueurs
+      if (socket && currentPartyId && isConnected) {
+        socket.emit('ready_for_next_round', { partyId: currentPartyId });
+      }
+    } catch (err: any) {
+      console.error('[Game] ❌ Error marking player as ready:', err);
+      setError(err.message);
+      setIsReadyForNextRound(false);
+    }
+  };
+
+  const handleNextRoundTransition = () => {
+    console.log('[Game] 🔄 Transitioning to next round');
+    setIsReadyForNextRound(false);
+    
+    if (currentRoundNumber < totalRounds) {
+      setCurrentRoundNumber(currentRoundNumber + 1);
+      loadRound(currentRoundNumber + 1);
+    } else {
+      finishGameHandler();
     }
   };
 
@@ -154,8 +553,24 @@ const Game = () => {
 
   const finishGameHandler = async () => {
     try {
-      await finishGame(parseInt(gameId!));
-      setIsGameFinished(true);
+      if (syncState.isMultiplayer) {
+        const response = await fetch(`http://localhost:3300/game/game/${gameId}/finish-sync`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        const result = await response.json();
+        
+        if (result.allPlayersFinished) {
+          setIsGameFinished(true);
+        }
+      } else {
+        await finishGame(parseInt(gameId!));
+        setIsGameFinished(true);
+      }
     } catch (err: any) {
       setError(err.message);
     }
@@ -177,18 +592,22 @@ const Game = () => {
     setIsQuitting(true);
     try {
       await quitActiveGame();
-      // Attendre un peu pour s'assurer que la base de données est mise à jour
       await new Promise(resolve => setTimeout(resolve, 500));
       navigate('/');
     } catch (err: any) {
       console.error('Error quitting game:', err);
       setError('Failed to quit game properly');
-      // Naviguer quand même vers l'accueil en cas d'erreur
       navigate('/');
     } finally {
       setIsQuitting(false);
     }
   };
+
+  // CORRECTION: Calculer la visibilité du bouton Ready correctement
+  const showReadyButton = guessResult && 
+                         syncState.isMultiplayer && 
+                         !isReadyForNextRound && 
+                         (syncState.roundComplete || syncState.playersFinished === syncState.totalPlayers);
 
   if (error) {
     return (
@@ -216,6 +635,13 @@ const Game = () => {
             <div className="text-orange-500 text-5xl font-bold mb-2">{totalScore}</div>
             <div className="text-white/80">Total Score</div>
           </div>
+          
+          {syncState.isMultiplayer && (
+            <div className="mb-6 text-white/80">
+              <p>Multiplayer game completed with {syncState.totalPlayers} players</p>
+            </div>
+          )}
+          
           <div className="flex gap-3">
             <button
               onClick={handlePlayAgain}
@@ -248,7 +674,6 @@ const Game = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 relative overflow-hidden">
-      {/* Game Image Background */}
       <div className="absolute inset-0">
         <img
           src={`http://localhost:3300/${currentRound.wallpaper.image}`}
@@ -258,7 +683,6 @@ const Game = () => {
         <div className="absolute inset-0 bg-black/20" />
       </div>
 
-      {/* Header - Minimalist */}
       <div className="relative z-10 p-4">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-4">
@@ -273,6 +697,13 @@ const Game = () => {
                   {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
                 </span>
               </div>
+              {syncState.isMultiplayer && (
+                <div className="flex items-center gap-2 text-orange-500">
+                  <Users size={18} />
+                  <span className="font-medium">{syncState.totalPlayers}P</span>
+                  <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+                </div>
+              )}
             </GlassCard>
             
             <GlassCard className="py-2 px-4">
@@ -300,12 +731,10 @@ const Game = () => {
         </div>
       </div>
 
-      {/* Bottom UI */}
       <div className="absolute bottom-0 left-0 right-0 p-6 z-10">
         <div className="max-w-4xl mx-auto">
           <div className="flex flex-col lg:flex-row gap-6">
             
-            {/* Main Guess Interface */}
             <div className="flex-1">
               <GlassCard>
                 <div className="text-center mb-6">
@@ -340,6 +769,16 @@ const Game = () => {
                         </button>
                       </div>
                     )}
+                    
+                    {syncState.isMultiplayer && (
+                      <div className="text-center text-white/60 text-xs mt-4">
+                        <div className="flex items-center justify-center gap-2">
+                          <Users size={14} />
+                          <span>Multiplayer Game</span>
+                          <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center">
@@ -357,7 +796,6 @@ const Game = () => {
               </GlassCard>
             </div>
 
-            {/* Results Panel */}
             {guessResult && (
               <div className="lg:w-80">
                 <GlassCard>
@@ -389,13 +827,84 @@ const Game = () => {
                       </div>
                     </div>
 
-                    <button
-                      onClick={handleNextRound}
-                      className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 mt-6"
-                    >
-                      {currentRoundNumber < totalRounds ? 'Next Round' : 'Finish Game'}
-                      <ArrowRight size={20} />
-                    </button>
+                    {/* Statut multiplayer */}
+                    {syncState.isMultiplayer && (
+                      <div className="border-t border-white/20 pt-4">
+                        <div className="text-white/80 text-sm mb-2">Multiplayer Status:</div>
+                        
+                        {!syncState.roundComplete && (
+                          <div className="text-orange-500 font-bold text-sm mb-2">
+                            {syncState.playersFinished}/{syncState.totalPlayers} players finished
+                          </div>
+                        )}
+
+                        {syncState.roundComplete && (
+                          <>
+                            <div className="text-green-500 font-bold text-sm mb-2">
+                              ✓ All players finished!
+                            </div>
+                            
+                            {isReadyForNextRound ? (
+                              <div className="bg-blue-500/20 border border-blue-500/50 rounded-lg p-3">
+                                <div className="text-blue-400 font-medium text-sm">
+                                  ✓ You're ready! Waiting for others...
+                                </div>
+                                <div className="text-white/70 text-xs mt-1">
+                                  {syncState.readyCount}/{syncState.totalPlayers} ready
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="bg-orange-500/20 border border-orange-500/50 rounded-lg p-3">
+                                <div className="text-orange-400 font-medium text-sm">
+                                  Ready for next round?
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Bouton Next Round / Ready */}
+                    {!syncState.isMultiplayer && (
+                      <button
+                        onClick={handleNextRound}
+                        className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 mt-6"
+                      >
+                        {currentRoundNumber < totalRounds ? 'Next Round' : 'Finish Game'}
+                        <ArrowRight size={18} />
+                      </button>
+                    )}
+
+                    {/* Bouton Ready pour Multiplayer */}
+                    {showReadyButton && (
+                      <button
+                        onClick={handleReadyForNextRound}
+                        className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 mt-6"
+                      >
+                        <Users size={18} />
+                        Ready for Next Round
+                      </button>
+                    )}
+
+                    {/* Affichage "Waiting for others" si ready en multiplayer */}
+                    {syncState.isMultiplayer && isReadyForNextRound && !syncState.allPlayersReady && (
+                      <div className="bg-green-500/20 border border-green-500/50 rounded-lg p-4 mt-4">
+                        <div className="text-green-400 font-medium mb-2 flex items-center gap-2">
+                          <Timer size={16} />
+                          Waiting for other players...
+                        </div>
+                        <p className="text-white/70 text-sm">
+                          {syncState.readyCount}/{syncState.totalPlayers} players ready
+                        </p>
+                        <div className="w-full bg-white/20 rounded-full h-2 mt-2">
+                          <div 
+                            className="bg-green-500 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${(syncState.readyCount / syncState.totalPlayers) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </GlassCard>
               </div>

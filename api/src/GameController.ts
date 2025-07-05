@@ -3,22 +3,18 @@ import { GameService, GameConfig } from "./GameService";
 import { Game, GameStatus } from "./Game";
 import { Round } from "./Round";
 import { User } from "./User";
+import { Guess } from "./Guess";
 import { Party, PartyType } from "./Party";
 import { authenticateToken, AuthenticatedRequest } from "./auth-middleware";
 import { soloGameRouter } from "./SoloGameController"; // Import du nouveau router solo
+import { WebSocketService } from './WebSocketService';
 
 export const gameRouter = express.Router();
 
-// Appliquer le middleware d'authentification à toutes les routes
 gameRouter.use(authenticateToken);
 
-// ===== ROUTES SOLO GAME (NOUVEAU) =====
-// Intégrer le nouveau router solo avec toutes les nouvelles fonctionnalités
 gameRouter.use("/solo", soloGameRouter);
 
-// ===== ROUTES SOLO GAME (ANCIENNES - on peut les garder pour compatibilité) =====
-
-// Démarre un jeu solo
 gameRouter.post("/solo/start-legacy", async (req: AuthenticatedRequest, res) => {
   try {
     const { roundsNumber = 3, time = 60, map = 'World', gamemode } = req.body;
@@ -44,9 +40,6 @@ gameRouter.post("/solo/start-legacy", async (req: AuthenticatedRequest, res) => 
   }
 });
 
-// ===== ROUTES PARTY MANAGEMENT =====
-
-// Crée une party privée
 gameRouter.post("/party/create", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.userId;
@@ -329,14 +322,81 @@ gameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authenticat
       return res.status(400).json({ error: "Missing required field: country" });
     }
 
-    const result = await GameService.processGuess(
-      parseInt(gameId), 
-      parseInt(relativeId), 
-      userId, 
-      country
-    );
+    const game = await Game.findOne({
+      where: { id: parseInt(gameId) },
+      relations: ['players', 'party']
+    });
 
-    res.json(result);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found" });
+    }
+
+    const isMultiplayer = game.party && game.players.length > 1;
+
+    if (isMultiplayer) {
+      console.log(`[GameController] Multiplayer detected for game ${gameId}, using sync processing`);
+      
+      const result = await GameService.processGuessWithSync(
+        parseInt(gameId),
+        parseInt(relativeId),
+        userId,
+        country
+      );
+
+      // AJOUT : Broadcaster via WebSocket quand le round se termine via HTTP
+      if (result.roundComplete && game.party) {
+        console.log(`[GameController] 🏁 Round completed via HTTP for party ${game.party.id}, broadcasting via WebSocket`);
+        
+        const webSocketService = req.app.locals.webSocketService;
+        
+        if (webSocketService) {
+          // Broadcast à tous les joueurs que le round est terminé
+          webSocketService.broadcastToParty(game.party.id, 'round_completed', {
+            roundNumber: parseInt(relativeId),
+            results: [],
+            isLastRound: parseInt(relativeId) >= game.rounds_number,
+            nextRoundAvailable: parseInt(relativeId) < game.rounds_number
+          });
+
+          // Broadcast le status du joueur qui vient de finir
+          webSocketService.broadcastToParty(game.party.id, 'player_finished_round', {
+            playerId: userId,
+            playerName: game.players.find(p => p.id === userId)?.name || 'Unknown',
+            finishedCount: result.totalPlayers - result.waitingPlayers,
+            totalPlayers: result.totalPlayers,
+            stillWaiting: 0
+          });
+        }
+      }
+
+      return res.json({
+        roundId: result.roundId,
+        relative_id: result.relative_id,
+        guessNumber: result.guessNumber,
+        isCorrect: result.isCorrect,
+        score: result.score,
+        correctLocation: result.correctLocation,
+        userGuess: result.userGuess,
+        roundComplete: result.roundComplete,
+        waitingPlayers: result.waitingPlayers,
+        totalPlayers: result.totalPlayers,
+        isMultiplayer: true
+      });
+    } else {
+      console.log(`[GameController] Solo game detected for game ${gameId}, using normal processing`);
+      
+      const result = await GameService.processGuess(
+        parseInt(gameId), 
+        parseInt(relativeId), 
+        userId, 
+        country
+      );
+
+      return res.json({
+        ...result,
+        isMultiplayer: false
+      });
+    }
   } catch (error) {
     console.error("Error processing guess:", error);
     res.status(400).json({ error: error instanceof Error ? error.message : "Failed to process guess" });
@@ -508,5 +568,233 @@ gameRouter.post("/party/code/:partyCode/leave", async (req: AuthenticatedRequest
   } catch (error) {
     console.error("Error leaving party:", error);
     res.status(400).json({ error: error instanceof Error ? error.message : "Failed to leave party" });
+  }
+});
+
+// Route pour marquer un joueur comme prêt pour le round suivant
+gameRouter.post("/game/:gameId/ready-next-round", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = req.params;
+    const userId = req.user!.userId;
+
+    const game = await GameService.verifyUserInGame(parseInt(gameId), userId);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found or access denied" });
+    }
+
+    const syncResult = GameService.markPlayerReady(parseInt(gameId), userId);
+
+    res.json({
+      message: "Player marked as ready",
+      allPlayersReady: syncResult.allPlayersReady,
+      gameId: parseInt(gameId),
+      userId
+    });
+  } catch (error) {
+    console.error("Error marking player as ready:", error);
+    res.status(400).json({ error: error instanceof Error ? error.message : "Failed to mark player as ready" });
+  }
+});
+
+// Route pour obtenir l'état de synchronisation d'une partie
+gameRouter.get("/game/:gameId/sync-state", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = req.params;
+    const userId = req.user!.userId;
+
+    const game = await GameService.verifyUserInGame(parseInt(gameId), userId);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found or access denied" });
+    }
+
+    const syncState = GameService.getGameSync(parseInt(gameId));
+    
+    if (!syncState) {
+      return res.json({
+        isSynchronized: false,
+        message: "This game is not synchronized (solo game)"
+      });
+    }
+
+    res.json({
+      isSynchronized: true,
+      gameId: syncState.gameId,
+      currentRound: syncState.currentRound,
+      playersFinished: syncState.playersWhoFinished.size,
+      allPlayersFinished: syncState.allPlayersFinished,
+      playersReady: syncState.playersReady.size,
+      totalPlayers: game.players.length
+    });
+  } catch (error) {
+    console.error("Error getting sync state:", error);
+    res.status(500).json({ error: "Failed to get sync state" });
+  }
+});
+
+// Route pour obtenir les résultats du round
+gameRouter.get("/game/:gameId/round/:relativeId/results", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId, relativeId } = req.params;
+    const userId = req.user!.userId;
+
+    const game = await GameService.verifyUserInGame(parseInt(gameId), userId);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found or access denied" });
+    }
+
+    const roundResults = GameService.getRoundResults(parseInt(gameId));
+    
+    if (roundResults.size === 0) {
+      return res.status(404).json({ error: "Round results not available yet" });
+    }
+
+    const formattedResults = Array.from(roundResults.entries()).map(([playerId, result]) => {
+      const player = game.players.find(p => p.id === playerId);
+      return {
+        playerId,
+        playerName: player?.name || 'Unknown',
+        result: {
+          ...result,
+          // Masquer certaines informations sensibles si nécessaire
+        }
+      };
+    });
+
+    res.json({
+      roundId: parseInt(relativeId),
+      results: formattedResults,
+      totalPlayers: game.players.length
+    });
+  } catch (error) {
+    console.error("Error getting round results:", error);
+    res.status(500).json({ error: "Failed to get round results" });
+  }
+});
+
+// Route modifiée pour terminer une partie avec vérification
+gameRouter.post("/game/:gameId/finish-sync", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = req.params;
+    const userId = req.user!.userId;
+
+    const game = await GameService.verifyUserInGame(parseInt(gameId), userId);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found or access denied" });
+    }
+
+    // Vérifier si c'est une partie multijoueur
+    if (game.party && game.players.length > 1) {
+      // Utiliser la méthode synchronisée
+      const finishResult = await GameService.finishGameIfAllPlayersReady(parseInt(gameId));
+      
+      if (finishResult.canFinish) {
+        res.json({
+          message: "Game finished successfully",
+          gameId: finishResult.game!.id,
+          status: finishResult.game!.status,
+          winner: finishResult.game!.winner ? {
+            id: finishResult.game!.winner.id,
+            name: finishResult.game!.winner.name
+          } : null,
+          allPlayersFinished: true
+        });
+      } else {
+        res.json({
+          message: "Waiting for other players to finish",
+          gameId: parseInt(gameId),
+          status: "waiting",
+          allPlayersFinished: false,
+          playersStillPlaying: finishResult.playersStillPlaying
+        });
+      }
+    } else {
+      // Partie solo, utiliser la méthode classique
+      const finishedGame = await GameService.finishGame(parseInt(gameId), userId);
+      res.json({
+        message: "Game finished successfully",
+        gameId: finishedGame.id,
+        status: finishedGame.status,
+        winner: finishedGame.winner ? {
+          id: finishedGame.winner.id,
+          name: finishedGame.winner.name
+        } : null,
+        allPlayersFinished: true
+      });
+    }
+  } catch (error) {
+    console.error("Error finishing game:", error);
+    res.status(400).json({ error: error instanceof Error ? error.message : "Failed to finish game" });
+  }
+});
+
+// Route pour vérifier si tous les joueurs ont terminé
+gameRouter.get("/game/:gameId/all-players-finished", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = req.params;
+    const userId = req.user!.userId;
+
+    const game = await GameService.verifyUserInGame(parseInt(gameId), userId);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found or access denied" });
+    }
+
+    const allPlayersFinished = await GameService.checkAllPlayersFinishedGame(parseInt(gameId));
+    
+    res.json({
+      gameId: parseInt(gameId),
+      allPlayersFinished,
+      totalPlayers: game.players.length
+    });
+  } catch (error) {
+    console.error("Error checking if all players finished:", error);
+    res.status(500).json({ error: "Failed to check game completion status" });
+  }
+});
+
+// Route pour obtenir le statut d'attente d'une partie
+gameRouter.get("/game/:gameId/waiting-status", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = req.params;
+    const userId = req.user!.userId;
+
+    const game = await GameService.verifyUserInGame(parseInt(gameId), userId);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found or access denied" });
+    }
+
+    // Obtenir le nombre de joueurs qui ont terminé chaque round
+    const totalRounds = game.rounds_number;
+    const playerStatuses = await Promise.all(
+      game.players.map(async (player) => {
+        const completedRounds = await Guess.count({
+          where: {
+            game: { id: parseInt(gameId) },
+            user: { id: player.id }
+          }
+        });
+        
+        return {
+          playerId: player.id,
+          playerName: player.name,
+          completedRounds,
+          hasFinished: completedRounds === totalRounds
+        };
+      })
+    );
+
+    const playersStillPlaying = playerStatuses.filter(p => !p.hasFinished).length;
+    const allPlayersFinished = playersStillPlaying === 0;
+
+    res.json({
+      gameId: parseInt(gameId),
+      totalPlayers: game.players.length,
+      playersStillPlaying,
+      allPlayersFinished,
+      playerStatuses,
+      totalRounds
+    });
+  } catch (error) {
+    console.error("Error getting waiting status:", error);
+    res.status(500).json({ error: "Failed to get waiting status" });
   }
 });

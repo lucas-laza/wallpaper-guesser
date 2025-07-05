@@ -122,38 +122,79 @@ soloGameRouter.get("/active", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.userId;
     
-    const activeGame = await GameSessionService.getActiveGame(userId);
-    
+    const activeGame = await Game.findOne({
+      where: {
+        players: { id: userId },
+        status: GameStatus.IN_PROGRESS
+      },
+      relations: ["players", "party"], // AJOUT: inclure party dans les relations
+      order: { id: "DESC" }
+    });
+
     if (!activeGame) {
-      return res.json({ hasActiveGame: false });
+      return res.json({
+        hasActiveGame: false
+      });
     }
 
-    const { round: currentRound, roundNumber, totalRounds } = await GameSessionService.getCurrentRound(activeGame.id, userId);
-    
-    const isGameCompleted = currentRound && currentRound.guesses > 0 && roundNumber === totalRounds;
+    // Récupérer le round actuel
+    const rounds = await Round.find({
+      where: { game: { id: activeGame.id } },
+      relations: ["wallpaper"],
+      order: { relative_id: "ASC" }
+    });
+
+    let currentRoundNumber = 1;
+    let roundData = null;
+
+    if (rounds.length > 0) {
+      // Trouver le premier round non joué ou le dernier round
+      const unplayedRound = rounds.find(r => r.guesses === 0);
+      if (unplayedRound) {
+        currentRoundNumber = unplayedRound.relative_id;
+        roundData = {
+          id: unplayedRound.id,
+          relative_id: unplayedRound.relative_id,
+          guesses: unplayedRound.guesses,
+          wallpaper: {
+            id: unplayedRound.wallpaper.id,
+            title: unplayedRound.wallpaper.title,
+            image: unplayedRound.wallpaper.img,
+            copyright: unplayedRound.wallpaper.copyright
+          }
+        };
+      } else {
+        const lastRound = rounds[rounds.length - 1];
+        currentRoundNumber = lastRound.relative_id;
+        roundData = {
+          id: lastRound.id,
+          relative_id: lastRound.relative_id,
+          guesses: lastRound.guesses,
+          wallpaper: {
+            id: lastRound.wallpaper.id,
+            title: lastRound.wallpaper.title,
+            image: lastRound.wallpaper.img,
+            copyright: lastRound.wallpaper.copyright
+          }
+        };
+      }
+    }
 
     res.json({
       hasActiveGame: true,
       gameId: activeGame.id,
-      currentRound: roundNumber,
-      totalRounds: totalRounds,
+      currentRound: currentRoundNumber,
+      totalRounds: activeGame.rounds_number,
       map: activeGame.map,
       time: activeGame.time,
-      isCompleted: isGameCompleted,
-      roundData: currentRound ? {
-        id: currentRound.id,
-        relative_id: currentRound.relative_id,
-        guesses: currentRound.guesses,
-        wallpaper: {
-          id: currentRound.wallpaper.id,
-          title: currentRound.wallpaper.title,
-          image: currentRound.wallpaper.img,
-          copyright: currentRound.wallpaper.copyright
-        }
-      } : null
+      isCompleted: false,
+      partyId: activeGame.party?.id || null,
+      isMultiplayer: activeGame.party ? activeGame.players.length > 1 : false,
+      totalPlayers: activeGame.players.length,
+      roundData: roundData
     });
-  } catch (err) {
-    console.error("Error checking active game:", err);
+  } catch (error) {
+    console.error("Error checking active game:", error);
     res.status(500).json({ error: "Failed to check active game" });
   }
 });
