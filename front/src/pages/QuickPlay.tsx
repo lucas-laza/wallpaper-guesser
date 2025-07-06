@@ -73,12 +73,12 @@ const QuickPlay = () => {
       }
       
       navigate(`/game/${game.gameId}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Vérifier si c'est un conflit de partie active
-      if (err.message.includes('already have an active game')) {
+      if (err instanceof Error && err.message.includes('already have an active game')) {
         await checkForActiveGame();
       } else {
-        setError(err.message);
+        setError(err instanceof Error ? err.message : 'Une erreur est survenue');
       }
     } finally {
       setIsLoading(false);
@@ -107,9 +107,9 @@ const QuickPlay = () => {
       
       // Maintenant on peut essayer de démarrer la nouvelle partie
       await handleStartGame();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error quitting active game:', error);
-      setError(`Failed to quit active game: ${error.message}`);
+      setError(`Failed to quit active game: ${error instanceof Error ? error.message : 'Une erreur est survenue'}`);
     } finally {
       setIsQuittingActive(false);
     }
@@ -122,25 +122,27 @@ const QuickPlay = () => {
 
   return (
     <>
-      {/* Header dynamique QuickPlay (avant lancement du jeu) */}
-      <div className="relative z-10 p-4">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <GlassCard className="flex items-center gap-3 py-2 px-4">
-              <div className="flex items-center gap-2 text-white">
-                <Target size={18} />
-                <span className="font-medium">1/{roundsNumber}</span>
-              </div>
-              <div className="flex items-center gap-2 text-white">
-                <Clock size={18} />
-                <span className="font-medium">
-                  {Math.floor(time / 60)}:{(time % 60).toString().padStart(2, '0')}
-                </span>
-              </div>
-            </GlassCard>
+      {/* Header dynamique QuickPlay (uniquement en partie) */}
+      {activeGame && (
+        <div className="relative z-10 p-4">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <GlassCard className="flex items-center gap-3 py-2 px-4">
+                <div className="flex items-center gap-2 text-white">
+                  <Target size={18} />
+                  <span className="font-medium">1/{roundsNumber}</span>
+                </div>
+                <div className="flex items-center gap-2 text-white">
+                  <Clock size={18} />
+                  <span className="font-medium">
+                    {Math.floor(time / 60)}:{(time % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              </GlassCard>
+            </div>
           </div>
         </div>
-      </div>
+      )}
       {/* Fin header dynamique */}
       <BackgroundImage src="https://images.pexels.com/photos/417074/pexels-photo-417074.jpeg?auto=compress&cs=tinysrgb&w=1920&h=1080&fit=crop">
         <div className="min-h-screen flex items-center justify-center p-6 pt-24">
