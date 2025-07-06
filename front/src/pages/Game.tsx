@@ -53,6 +53,16 @@ const Game = () => {
     allPlayersReady: false
   });
 
+  const [actionDebounce, setActionDebounce] = useState<{
+    lastReadyAction: number;
+    lastTransition: number;
+    pendingActions: Set<string>;
+  }>({
+    lastReadyAction: 0,
+    lastTransition: 0,
+    pendingActions: new Set()
+  });
+
   const { socket, isConnected, on, off, emit } = useWebSocket();
 
   useEffect(() => {
@@ -61,177 +71,200 @@ const Game = () => {
     }
   }, [gameId]);
 
-useEffect(() => {
-  if (!socket || !isConnected) return;
+  useEffect(() => {
+    if (!socket || !isConnected) return;
 
-  const eventHandlers = {
-    player_finished_round: (data: any) => {
-      console.log('🎯 [Game] Player finished round:', data);
-      setSyncState(prev => ({
-        ...prev,
-        playersFinished: data.finishedCount,
-        totalPlayers: data.totalPlayers,
-        roundComplete: data.finishedCount === data.totalPlayers
-      }));
+    const eventHandlers = {
+      player_finished_round: (data: any) => {
+        console.log('🎯 [Game] Player finished round:', data);
+        setSyncState(prev => ({
+          ...prev,
+          playersFinished: data.finishedCount,
+          totalPlayers: data.totalPlayers,
+          roundComplete: data.finishedCount === data.totalPlayers
+        }));
 
-      // CORRECTION 1: Auto-ready si TOUS les joueurs ont fini (pas seulement le dernier)
-      if (data.finishedCount === data.totalPlayers && guessResult && !isReadyForNextRound) {
-        console.log('[Game] 🤖 All players finished via player_finished_round = Auto-ready');
-        setTimeout(() => {
-          handleReadyForNextRound();
-        }, 1500);
+        if (data.finishedCount === data.totalPlayers && 
+            guessResult && 
+            !isReadyForNextRound &&
+            !actionDebounce.pendingActions.has('auto_ready')) {
+          
+          console.log('[Game] 🤖 All players finished = Scheduling auto-ready');
+          setActionDebounce(prev => ({ ...prev, pendingActions: new Set([...prev.pendingActions, 'auto_ready']) }));
+          
+          setTimeout(() => {
+            if (!isReadyForNextRound) {
+              handleReadyForNextRound();
+            }
+            setActionDebounce(prev => {
+              const newPending = new Set(prev.pendingActions);
+              newPending.delete('auto_ready');
+              return { ...prev, pendingActions: newPending };
+            });
+          }, 2000);
+        }
+      },
+
+      round_completed: (data: any) => {
+        console.log('🏁 [Game] Round completed event received:', data);
+        setRoundResults(data.results);
+        
+        setSyncState(prev => ({
+          ...prev,
+          roundComplete: true,
+          playersFinished: prev.totalPlayers,
+          allPlayersReady: false
+        }));
+
+        if (guessResult && 
+            !isReadyForNextRound && 
+            !actionDebounce.pendingActions.has('round_complete_ready')) {
+          
+          console.log('[Game] 🤖 Round completed + has guess = Auto-ready NOW');
+          setActionDebounce(prev => ({ ...prev, pendingActions: new Set([...prev.pendingActions, 'round_complete_ready']) }));
+          
+          setTimeout(() => {
+            if (!isReadyForNextRound) {
+              handleReadyForNextRound();
+            }
+            setActionDebounce(prev => {
+              const newPending = new Set(prev.pendingActions);
+              newPending.delete('round_complete_ready');
+              return { ...prev, pendingActions: newPending };
+            });
+          }, 1000);
+        }
+      },
+
+      player_ready_update: (data: any) => {
+        console.log('✅ [Game] Player ready update:', data);
+        setSyncState(prev => ({
+          ...prev,
+          readyCount: data.readyCount,
+          totalPlayers: data.totalPlayers,
+          allPlayersReady: data.allPlayersReady
+        }));
+        
+        if (data.allPlayersReady && 
+            !actionDebounce.pendingActions.has('transition')) {
+          
+          console.log('[Game] 🎉 All players ready - starting transition');
+          setActionDebounce(prev => ({ ...prev, pendingActions: new Set([...prev.pendingActions, 'transition']) }));
+          
+          setTimeout(() => {
+            handleNextRoundTransition();
+            setActionDebounce(prev => {
+              const newPending = new Set(prev.pendingActions);
+              newPending.delete('transition');
+              return { ...prev, pendingActions: newPending };
+            });
+          }, 1500);
+        }
+      },
+
+      round_started: (data: any) => {
+        console.log('🚀 [Game] Round started:', data);
+        
+        setCurrentRoundNumber(data.roundNumber);
+        setTimeLeft(60);
+        setGuessResult(null);
+        setSelectedCountry('');
+        setIsReadyForNextRound(false);
+        setRoundResults([]);
+        
+        setSyncState(prev => ({
+          ...prev,
+          roundComplete: false,
+          playersFinished: 0,
+          readyCount: 0,
+          allPlayersReady: false
+        }));
+        
+        setActionDebounce(prev => ({
+          ...prev,
+          pendingActions: new Set(),
+          lastTransition: Date.now()
+        }));
+        
+        loadRound(data.roundNumber);
+      },
+
+      game_finished: (data: any) => {
+        console.log('🎉 [Game] Game finished:', data);
+        setIsGameFinished(true);
+      },
+
+      guess_result: (data: any) => {
+        console.log('[Game] 🎲 Received guess result via WebSocket:', data);
+        setGuessResult(data);
+        setTotalScore(prev => prev + data.score);
+        
+        setSyncState(prev => ({
+          ...prev,
+          isMultiplayer: true,
+          roundComplete: data.roundComplete ?? false,
+          totalPlayers: data.totalPlayers ?? 1,
+          playersFinished: (data.totalPlayers ?? 1) - (data.waitingPlayers ?? 0)
+        }));
+        
+        setIsGuessing(false);
+
+        if (data.roundComplete && 
+            !isReadyForNextRound && 
+            !actionDebounce.pendingActions.has('guess_complete_ready')) {
+          
+          console.log('[Game] 🤖 Guess shows round complete = Auto-ready');
+          setActionDebounce(prev => ({ ...prev, pendingActions: new Set([...prev.pendingActions, 'guess_complete_ready']) }));
+          
+          setTimeout(() => {
+            if (!isReadyForNextRound) {
+              handleReadyForNextRound();
+            }
+            setActionDebounce(prev => {
+              const newPending = new Set(prev.pendingActions);
+              newPending.delete('guess_complete_ready');
+              return { ...prev, pendingActions: newPending };
+            });
+          }, 2500);
+        }
+      },
+      
+      error: (data: any) => {
+        console.error('[Game] ❌ WebSocket error:', data);
+        setError(data.message);
+        setIsGuessing(false);
+        
+        setActionDebounce(prev => ({
+          ...prev,
+          pendingActions: new Set()
+        }));
       }
-    },
+    };
 
-    round_completed: (data: any) => {
-      console.log('🏁 [Game] Round completed event received:', data);
-      setRoundResults(data.results);
-      
-      // CORRECTION 2: FORCER roundComplete à true quand on reçoit cet événement
-      setSyncState(prev => ({
-        ...prev,
-        roundComplete: true,
-        playersFinished: prev.totalPlayers // S'assurer que tous sont marqués comme finis
-      }));
-
-      // CORRECTION 3: Auto-ready IMMÉDIAT si on a une réponse
-      if (guessResult && !isReadyForNextRound) {
-        console.log('[Game] 🤖 Round completed event + has guess result = Auto-ready NOW');
-        setTimeout(() => {
-          handleReadyForNextRound();
-        }, 1000);
-      }
-    },
-
-    player_ready_update: (data: any) => {
-      console.log('✅ [Game] Player ready update:', data);
-      setSyncState(prev => ({
-        ...prev,
-        readyCount: data.readyCount,
-        totalPlayers: data.totalPlayers,
-        allPlayersReady: data.allPlayersReady
-      }));
-      
-      if (data.allPlayersReady) {
-        console.log('[Game] 🎉 All players ready - starting next round');
-        setTimeout(() => {
-          handleNextRoundTransition();
-        }, 1000);
-      }
-    },
-
-    round_started: (data: any) => {
-      console.log('🚀 [Game] Round started:', data);
-      setCurrentRoundNumber(data.roundNumber);
-      setTimeLeft(60);
-      setGuessResult(null);
-      setSelectedCountry('');
-      setIsReadyForNextRound(false);
-      setRoundResults([]);
-      setSyncState(prev => ({
-        ...prev,
-        roundComplete: false,
-        playersFinished: 0,
-        readyCount: 0,
-        allPlayersReady: false
-      }));
-      
-      loadRound(data.roundNumber);
-    },
-
-    game_finished: (data: any) => {
-      console.log('🎉 [Game] Game finished:', data);
-      setIsGameFinished(true);
-    },
-
-    guess_result: (data: any) => {
-      console.log('[Game] 🎲 Received guess result via WebSocket:', data);
-      setGuessResult(data);
-      setTotalScore(prev => prev + data.score);
-      
-      setSyncState(prev => ({
-        ...prev,
-        isMultiplayer: true,
-        roundComplete: data.roundComplete ?? false,
-        totalPlayers: data.totalPlayers ?? 1,
-        playersFinished: (data.totalPlayers ?? 1) - (data.waitingPlayers ?? 0)
-      }));
-      
-      setIsGuessing(false);
-
-      // CORRECTION 4: Auto-ready immédiat si le round est complet dans la réponse
-      if (data.roundComplete && !isReadyForNextRound) {
-        console.log('[Game] 🤖 Guess result shows round complete = Auto-ready');
-        setTimeout(() => {
-          handleReadyForNextRound();
-        }, 2000);
-      }
-    },
-
-    error: (data: any) => {
-      console.error('[Game] ❌ WebSocket error:', data);
-      setError(data.message);
-      setIsGuessing(false);
-    }
-  };
-
-  Object.entries(eventHandlers).forEach(([event, handler]) => {
-    socket.on(event, handler);
-  });
-
-  return () => {
-    Object.keys(eventHandlers).forEach(event => {
-      socket.off(event);
+    Object.entries(eventHandlers).forEach(([event, handler]) => {
+      socket.on(event, handler);
     });
-  };
-}, [socket, isConnected, guessResult, isReadyForNextRound]);
 
-// CORRECTION 5: Auto-ready basé sur l'état - plus agressif
-useEffect(() => {
-  console.log('[Game] 🔍 Checking auto-ready conditions:', {
-    hasGuessResult: !!guessResult,
-    isMultiplayer: syncState.isMultiplayer,
-    roundComplete: syncState.roundComplete,
-    isReadyForNextRound: isReadyForNextRound,
-    playersFinished: syncState.playersFinished,
-    totalPlayers: syncState.totalPlayers
-  });
+    return () => {
+      Object.keys(eventHandlers).forEach(event => {
+        socket.off(event);
+      });
+    };
+  }, [socket, isConnected, guessResult, isReadyForNextRound, actionDebounce.pendingActions]);
 
-  // CORRECTION 6: Conditions d'auto-ready élargies
-  if (guessResult && 
-      syncState.isMultiplayer && 
-      !isReadyForNextRound) {
-    
-    // Option 1: Tous les joueurs ont fini
-    if (syncState.playersFinished === syncState.totalPlayers) {
-      console.log('[Game] 🤖 Auto-ready: All players finished');
-      setTimeout(() => {
+  // Auto-ready fallback with protection against duplicates
+  useEffect(() => {
+    if (!guessResult || !syncState.isMultiplayer || isReadyForNextRound) return;
+
+    const fallbackTimer = setTimeout(() => {
+      console.log('[Game] 🤖 Fallback auto-ready: 5 seconds elapsed');
+      if (!isReadyForNextRound && !actionDebounce.pendingActions.has('fallback_ready')) {
         handleReadyForNextRound();
-      }, 1000);
-    }
-    // Option 2: Round marqué comme complet
-    else if (syncState.roundComplete) {
-      console.log('[Game] 🤖 Auto-ready: Round marked as complete');
-      setTimeout(() => {
-        handleReadyForNextRound();
-      }, 1500);
-    }
-  }
-}, [guessResult, syncState.isMultiplayer, syncState.roundComplete, syncState.playersFinished, syncState.totalPlayers, isReadyForNextRound]);
+      }
+    }, 5000);
 
-// CORRECTION 7: Fallback auto-ready après 5 secondes si on a une réponse en multiplayer
-useEffect(() => {
-  if (!guessResult || !syncState.isMultiplayer || isReadyForNextRound) return;
-
-  const fallbackTimer = setTimeout(() => {
-    console.log('[Game] 🤖 Fallback auto-ready: 5 seconds elapsed with guess result');
-    if (!isReadyForNextRound) {
-      handleReadyForNextRound();
-    }
-  }, 5000);
-
-  return () => clearTimeout(fallbackTimer);
-}, [guessResult, syncState.isMultiplayer, isReadyForNextRound]);
+    return () => clearTimeout(fallbackTimer);
+  }, [guessResult, syncState.isMultiplayer, isReadyForNextRound]);
 
   useEffect(() => {
     if (timeLeft > 0 && !guessResult && !isGameFinished) {
@@ -241,30 +274,6 @@ useEffect(() => {
       handleGuessSubmit('');
     }
   }, [timeLeft, guessResult, isGameFinished]);
-
-  // CORRECTION: Auto-ready basé sur l'état complet
-  useEffect(() => {
-    console.log('[Game] 🔍 Checking auto-ready conditions:', {
-      hasGuessResult: !!guessResult,
-      isMultiplayer: syncState.isMultiplayer,
-      roundComplete: syncState.roundComplete,
-      isReadyForNextRound: isReadyForNextRound,
-      playersFinished: syncState.playersFinished,
-      totalPlayers: syncState.totalPlayers
-    });
-
-    // Auto-ready dès qu'on a une réponse ET que tous les joueurs ont fini
-    if (guessResult && 
-        syncState.isMultiplayer && 
-        !isReadyForNextRound &&
-        syncState.playersFinished === syncState.totalPlayers) {
-      
-      console.log('[Game] 🤖 Auto-ready: All players finished, marking as ready');
-      setTimeout(() => {
-        handleReadyForNextRound();
-      }, 1000);
-    }
-  }, [guessResult, syncState.isMultiplayer, syncState.roundComplete, syncState.playersFinished, syncState.totalPlayers, isReadyForNextRound]);
 
   const initializeGame = async () => {
     try {
@@ -423,7 +432,7 @@ useEffect(() => {
           country: country || selectedCountry
         });
         
-        // Timeout pour WebSocket
+        // Timeout for WebSocket
         setTimeout(() => {
           if (isGuessing && !guessResult) {
             console.warn('[Game] ⚠️ WebSocket guess timeout, falling back to HTTP');
@@ -478,6 +487,14 @@ useEffect(() => {
   };
 
   const handleReadyForNextRound = async () => {
+    const now = Date.now();
+    
+    // Protection against multiple calls
+    if (now - actionDebounce.lastReadyAction < 1000) {
+      console.log('[Game] ⚠️ Ready action too recent, ignoring');
+      return;
+    }
+
     console.log('[Game] 🎯 Player requesting to be ready for next round');
 
     if (!syncState.isMultiplayer) {
@@ -491,6 +508,7 @@ useEffect(() => {
       return;
     }
     
+    setActionDebounce(prev => ({ ...prev, lastReadyAction: now }));
     setIsReadyForNextRound(true);
     
     try {
@@ -503,7 +521,7 @@ useEffect(() => {
         }
       }
       
-      // API call pour marquer comme ready
+      // API call to mark as ready
       const response = await fetch(`http://localhost:3300/game/game/${gameId}/ready-next-round`, {
         method: 'POST',
         headers: {
@@ -519,7 +537,7 @@ useEffect(() => {
       const result = await response.json();
       console.log('[Game] ✅ Ready API response:', result);
       
-      // WebSocket pour notifier les autres joueurs
+      // WebSocket to notify other players
       if (socket && currentPartyId && isConnected) {
         socket.emit('ready_for_next_round', { partyId: currentPartyId });
       }
@@ -531,7 +549,15 @@ useEffect(() => {
   };
 
   const handleNextRoundTransition = () => {
+    const now = Date.now();
+    
+    if (now - actionDebounce.lastTransition < 2000) {
+      console.log('[Game] ⚠️ Transition too recent, ignoring');
+      return;
+    }
+
     console.log('[Game] 🔄 Transitioning to next round');
+    setActionDebounce(prev => ({ ...prev, lastTransition: now }));
     setIsReadyForNextRound(false);
     
     if (currentRoundNumber < totalRounds) {
@@ -603,11 +629,14 @@ useEffect(() => {
     }
   };
 
-  // CORRECTION: Calculer la visibilité du bouton Ready correctement
+  // Calculate correct Ready button visibility
   const showReadyButton = guessResult && 
                          syncState.isMultiplayer && 
                          !isReadyForNextRound && 
-                         (syncState.roundComplete || syncState.playersFinished === syncState.totalPlayers);
+                         (syncState.roundComplete || syncState.playersFinished === syncState.totalPlayers) &&
+                         !actionDebounce.pendingActions.has('auto_ready') &&
+                         !actionDebounce.pendingActions.has('round_complete_ready') &&
+                         !actionDebounce.pendingActions.has('guess_complete_ready');
 
   if (error) {
     return (
@@ -827,7 +856,7 @@ useEffect(() => {
                       </div>
                     </div>
 
-                    {/* Statut multiplayer */}
+                    {/* Multiplayer status */}
                     {syncState.isMultiplayer && (
                       <div className="border-t border-white/20 pt-4">
                         <div className="text-white/80 text-sm mb-2">Multiplayer Status:</div>
@@ -862,10 +891,19 @@ useEffect(() => {
                             )}
                           </>
                         )}
+
+                        {/* Action indicator */}
+                        {actionDebounce.pendingActions.size > 0 && (
+                          <div className="bg-yellow-500/20 border border-yellow-500/50 rounded-lg p-2 mt-2">
+                            <div className="text-yellow-400 text-xs">
+                              ⏳ Processing... ({Array.from(actionDebounce.pendingActions).join(', ')})
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/* Bouton Next Round / Ready */}
+                    {/* Next Round / Ready buttons */}
                     {!syncState.isMultiplayer && (
                       <button
                         onClick={handleNextRound}
@@ -876,18 +914,19 @@ useEffect(() => {
                       </button>
                     )}
 
-                    {/* Bouton Ready pour Multiplayer */}
+                    {/* Ready button for multiplayer */}
                     {showReadyButton && (
                       <button
                         onClick={handleReadyForNextRound}
-                        className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 mt-6"
+                        disabled={actionDebounce.pendingActions.size > 0}
+                        className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 mt-6"
                       >
                         <Users size={18} />
-                        Ready for Next Round
+                        {actionDebounce.pendingActions.size > 0 ? 'Processing...' : 'Ready for Next Round'}
                       </button>
                     )}
 
-                    {/* Affichage "Waiting for others" si ready en multiplayer */}
+                    {/* Waiting for others display */}
                     {syncState.isMultiplayer && isReadyForNextRound && !syncState.allPlayersReady && (
                       <div className="bg-green-500/20 border border-green-500/50 rounded-lg p-4 mt-4">
                         <div className="text-green-400 font-medium mb-2 flex items-center gap-2">

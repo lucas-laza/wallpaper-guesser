@@ -87,6 +87,7 @@ export class WallpaperService {
 export class GameService {
   private static gameStates: Map<number, GameStateSync> = new Map();
   private static cleanupInterval: NodeJS.Timeout | null = null;
+  private static operationLocks: Map<number, Set<string>> = new Map();
 
   static {
     this.startCleanupInterval();
@@ -110,6 +111,32 @@ export class GameService {
       if (now.getTime() - gameState.lastActivity.getTime() > maxAge) {
         console.log(`[GameService] Cleaning up old game state for game ${gameId}`);
         this.gameStates.delete(gameId);
+        this.operationLocks.delete(gameId);
+      }
+    }
+  }
+
+  private static acquireOperationLock(gameId: number, operation: string): boolean {
+    if (!this.operationLocks.has(gameId)) {
+      this.operationLocks.set(gameId, new Set());
+    }
+    
+    const locks = this.operationLocks.get(gameId)!;
+    if (locks.has(operation)) {
+      console.log(`[GameService] ⚠️ Operation ${operation} already in progress for game ${gameId}`);
+      return false;
+    }
+    
+    locks.add(operation);
+    return true;
+  }
+
+  private static releaseOperationLock(gameId: number, operation: string): void {
+    const locks = this.operationLocks.get(gameId);
+    if (locks) {
+      locks.delete(operation);
+      if (locks.size === 0) {
+        this.operationLocks.delete(gameId);
       }
     }
   }
@@ -130,76 +157,39 @@ export class GameService {
     return isPlayerInGame ? game : null;
   }
 
-
   static initializeGameSync(gameId: number): GameStateSync {
-    if (this.gameStates.has(gameId)) {
-      console.log(`[GameService] ⚠️ Replacing existing sync state for game ${gameId}`);
-      const existingState = this.gameStates.get(gameId)!;
-      console.log(`[GameService] 📊 Previous state: round ${existingState.currentRound}, finished: ${existingState.playersWhoFinished.size}, ready: ${existingState.playersReady.size}`);
+    if (!this.acquireOperationLock(gameId, 'initialize')) {
+      const existing = this.gameStates.get(gameId);
+      if (existing) {
+        existing.lastActivity = new Date();
+        return existing;
+      }
     }
 
-    const gameState: GameStateSync = {
-      gameId,
-      currentRound: 1,
-      lastCompletedRound: 0, // NOUVEAU: Aucun round complété au début
-      playersWhoFinished: new Set(),
-      playersWhoFinishedLastRound: new Set(), // NOUVEAU: Vide au début
-      playersReady: new Set(),
-      allPlayersFinished: false,
-      roundResults: new Map(),
-      lastActivity: new Date()
-    };
-    
-    this.gameStates.set(gameId, gameState);
-    console.log(`[GameService] ✅ Initialized clean sync state for game ${gameId}`);
-    return gameState;
-  }
+    try {
+      if (this.gameStates.has(gameId)) {
+        console.log(`[GameService] ⚠️ Replacing existing sync state for game ${gameId}`);
+        const existingState = this.gameStates.get(gameId)!;
+        console.log(`[GameService] 📊 Previous state: round ${existingState.currentRound}, finished: ${existingState.playersWhoFinished.size}, ready: ${existingState.playersReady.size}`);
+      }
 
-  static async diagnoseGameState(gameId: number): Promise<void> {
-    console.log(`[GameService] 🔍 Diagnosing game state for game ${gameId}`);
-    
-    const game = await Game.findOne({
-      where: { id: gameId },
-      relations: ['players']
-    });
-
-    if (!game) {
-      console.error(`[GameService] Game ${gameId} not found`);
-      return;
-    }
-
-    console.log(`[GameService] Game ${gameId} info:`);
-    console.log(`  - Status: ${game.status}`);
-    console.log(`  - Total rounds: ${game.rounds_number}`);
-    console.log(`  - Players: [${game.players.map(p => `${p.name}(${p.id})`).join(', ')}]`);
-
-    // Vérifier les guesses de chaque joueur
-    for (const player of game.players) {
-      const guesses = await Guess.find({
-        where: {
-          game: { id: gameId },
-          user: { id: player.id }
-        },
-        relations: ['round'],
-        order: { id: 'ASC' }
-      });
-
-      console.log(`[GameService] Player ${player.name}(${player.id}): ${guesses.length} guesses`);
-      guesses.forEach(guess => {
-        console.log(`  - Round ${guess.round.relative_id}: ${guess.country_code} (${guess.is_correct ? 'correct' : 'incorrect'})`);
-      });
-    }
-
-    // État GameService
-    const gameServiceState = this.getGameSync(gameId);
-    if (gameServiceState) {
-      console.log(`[GameService] GameService state:`);
-      console.log(`  - Current round: ${gameServiceState.currentRound}`);
-      console.log(`  - Players finished: [${Array.from(gameServiceState.playersWhoFinished).join(', ')}]`);
-      console.log(`  - Players ready: [${Array.from(gameServiceState.playersReady).join(', ')}]`);
-      console.log(`  - All finished: ${gameServiceState.allPlayersFinished}`);
-    } else {
-      console.log(`[GameService] No GameService state found`);
+      const gameState: GameStateSync = {
+        gameId,
+        currentRound: 1,
+        lastCompletedRound: 0,
+        playersWhoFinished: new Set(),
+        playersWhoFinishedLastRound: new Set(),
+        playersReady: new Set(),
+        allPlayersFinished: false,
+        roundResults: new Map(),
+        lastActivity: new Date()
+      };
+      
+      this.gameStates.set(gameId, gameState);
+      console.log(`[GameService] ✅ Initialized clean sync state for game ${gameId}`);
+      return gameState;
+    } finally {
+      this.releaseOperationLock(gameId, 'initialize');
     }
   }
 
@@ -212,92 +202,117 @@ export class GameService {
   }
 
   static async syncGameStateWithDatabase(gameId: number): Promise<void> {
-    console.log(`[GameService] 🔄 Syncing game state with database for game ${gameId}`);
-    
-    const game = await Game.findOne({
-      where: { id: gameId },
-      relations: ['players']
-    });
-
-    if (!game) {
-      console.error(`[GameService] ❌ Game ${gameId} not found for sync`);
-      throw new Error(`Game ${gameId} not found`);
+    if (!this.acquireOperationLock(gameId, 'sync_database')) {
+      console.log(`[GameService] Sync already in progress for game ${gameId}, waiting...`);
+      
+      let retries = 10;
+      while (retries > 0 && this.operationLocks.get(gameId)?.has('sync_database')) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        retries--;
+      }
+      
+      if (retries === 0) {
+        console.warn(`[GameService] Sync timeout for game ${gameId}`);
+      }
+      return;
     }
 
-    let gameState = this.gameStates.get(gameId);
-    if (!gameState) {
-      console.log(`[GameService] 🆕 Creating new game state for game ${gameId}`);
-      gameState = this.initializeGameSync(gameId);
-    }
+    try {
+      console.log(`[GameService] 🔄 Syncing game state with database for game ${gameId}`);
+      
+      const game = await Game.findOne({
+        where: { id: gameId },
+        relations: ['players']
+      });
 
-    // Analyser les réponses soumises pour déterminer l'état actuel
-    const playerCompletionStatus = await Promise.all(
-      game.players.map(async (player) => {
-        const guessCount = await Guess.count({
-          where: {
-            game: { id: gameId },
-            user: { id: player.id }
+      if (!game) {
+        console.error(`[GameService] ❌ Game ${gameId} not found for sync`);
+        throw new Error(`Game ${gameId} not found`);
+      }
+
+      let gameState = this.gameStates.get(gameId);
+      if (!gameState) {
+        console.log(`[GameService] 🆕 Creating new game state for game ${gameId}`);
+        gameState = this.initializeGameSync(gameId);
+      }
+
+      const playerCompletionStatus = await Promise.all(
+        game.players.map(async (player) => {
+          const guessCount = await Guess.createQueryBuilder('guess')
+            .where('guess.gameId = :gameId', { gameId })
+            .andWhere('guess.userId = :userId', { userId: player.id })
+            .getCount();
+          
+          return { playerId: player.id, guessCount };
+        })
+      );
+
+      console.log(`[GameService] 📊 Player completion status for game ${gameId}:`, playerCompletionStatus);
+
+      const minGuessCount = Math.min(...playerCompletionStatus.map(p => p.guessCount));
+      const maxGuessCount = Math.max(...playerCompletionStatus.map(p => p.guessCount));
+      
+      let currentRound = gameState.currentRound;
+      let lastCompletedRound = minGuessCount;
+      
+      if (minGuessCount >= currentRound) {
+        lastCompletedRound = currentRound;
+        console.log(`[GameService] ✅ All players completed round ${currentRound}`);
+      } else {
+        lastCompletedRound = minGuessCount;
+        console.log(`[GameService] ⏳ Round ${currentRound} still in progress (min: ${minGuessCount}/${currentRound})`);
+      }
+      
+      gameState.currentRound = currentRound;
+      gameState.lastCompletedRound = lastCompletedRound;
+      
+      gameState.playersWhoFinished.clear();
+      gameState.playersWhoFinishedLastRound.clear();
+      
+      if (lastCompletedRound > 0) {
+        playerCompletionStatus.forEach(({ playerId, guessCount }) => {
+          if (guessCount >= lastCompletedRound) {
+            gameState!.playersWhoFinishedLastRound.add(playerId);
           }
         });
-        return { playerId: player.id, guessCount };
-      })
-    );
-
-    console.log(`[GameService] 📊 Player completion status for game ${gameId}:`, playerCompletionStatus);
-
-    const minGuessCount = Math.min(...playerCompletionStatus.map(p => p.guessCount));
-    const maxGuessCount = Math.max(...playerCompletionStatus.map(p => p.guessCount));
-    
-    // CORRECTION CRITIQUE: Gérer les rounds complétés vs le round actuel
-    const lastCompletedRound = minGuessCount; // Le dernier round que TOUS les joueurs ont terminé
-    const currentRound = Math.min(lastCompletedRound + 1, game.rounds_number);
-    
-    gameState.lastCompletedRound = lastCompletedRound;
-    gameState.currentRound = currentRound;
-    
-    // Réinitialiser les états
-    gameState.playersWhoFinished.clear();
-    gameState.playersWhoFinishedLastRound.clear();
-    
-    // NOUVEAU: Marquer tous les joueurs comme ayant fini le dernier round complété
-    if (lastCompletedRound > 0) {
-      game.players.forEach(player => {
-        gameState!.playersWhoFinishedLastRound.add(player.id);
-      });
-    }
-    
-    // Marquer les joueurs qui ont fini le round actuel
-    playerCompletionStatus.forEach(({ playerId, guessCount }) => {
-      if (guessCount >= currentRound) {
-        gameState!.playersWhoFinished.add(playerId);
       }
-    });
-
-    // Déterminer si tous les joueurs ont fini le round actuel
-    const allPlayersFinished = gameState.playersWhoFinished.size === game.players.length;
-    gameState.allPlayersFinished = allPlayersFinished;
-    gameState.lastActivity = new Date();
-
-    console.log(`[GameService] ✅ Synced game ${gameId}:`);
-    console.log(`  - Last completed round: ${lastCompletedRound}`);
-    console.log(`  - Current round: ${currentRound}/${game.rounds_number}`);
-    console.log(`  - Players finished current round: ${gameState.playersWhoFinished.size}/${game.players.length}`);
-    console.log(`  - Players finished last round: ${gameState.playersWhoFinishedLastRound.size}/${game.players.length}`);
-    console.log(`  - All players finished current: ${allPlayersFinished}`);
-    console.log(`  - Min/Max guess counts: ${minGuessCount}/${maxGuessCount}`);
-  }
-
-
-  static async hasPlayerFinishedRound(gameId: number, playerId: number, roundNumber: number): Promise<boolean> {
-    if (roundNumber <= 0) return true; // Les rounds <= 0 sont considérés comme "finis"
-    
-    try {
-      const guessCount = await Guess.count({
-        where: {
-          game: { id: gameId },
-          user: { id: playerId }
+      
+      playerCompletionStatus.forEach(({ playerId, guessCount }) => {
+        if (guessCount >= currentRound) {
+          gameState!.playersWhoFinished.add(playerId);
         }
       });
+
+      const allPlayersFinished = gameState.playersWhoFinished.size === game.players.length && 
+                                currentRound >= game.rounds_number &&
+                                minGuessCount >= game.rounds_number;
+      gameState.allPlayersFinished = allPlayersFinished;
+      gameState.lastActivity = new Date();
+
+      console.log(`[GameService] ✅ Synced game ${gameId}:`);
+      console.log(`  - Current round: ${currentRound}/${game.rounds_number}`);
+      console.log(`  - Last completed round: ${lastCompletedRound}`);
+      console.log(`  - Players finished current round: ${gameState.playersWhoFinished.size}/${game.players.length}`);
+      console.log(`  - Players finished last round: ${gameState.playersWhoFinishedLastRound.size}/${game.players.length}`);
+      console.log(`  - All players finished game: ${allPlayersFinished}`);
+      console.log(`  - Min/Max guess counts: ${minGuessCount}/${maxGuessCount}`);
+      
+      console.log(`[GameService] 🔍 Detailed state:`);
+      console.log(`  - Players who finished current [${currentRound}]: [${Array.from(gameState.playersWhoFinished).join(', ')}]`);
+      console.log(`  - Players who finished last completed [${lastCompletedRound}]: [${Array.from(gameState.playersWhoFinishedLastRound).join(', ')}]`);
+    } finally {
+      this.releaseOperationLock(gameId, 'sync_database');
+    }
+  }
+
+  static async hasPlayerFinishedRound(gameId: number, playerId: number, roundNumber: number): Promise<boolean> {
+    if (roundNumber <= 0) return true;
+    
+    try {
+      const guessCount = await Guess.createQueryBuilder('guess')
+        .where('guess.gameId = :gameId', { gameId })
+        .andWhere('guess.userId = :userId', { userId: playerId })
+        .getCount();
       
       const hasFinished = guessCount >= roundNumber;
       console.log(`[GameService] Player ${playerId} finished status for round ${roundNumber}: ${hasFinished} (${guessCount} guesses total)`);
@@ -309,157 +324,190 @@ export class GameService {
     }
   }
 
-
   static async markPlayerFinishedRound(gameId: number, userId: number): Promise<{ 
     allPlayersFinished: boolean; 
     waitingPlayers: number; 
     totalPlayers: number;
   }> {
-    let gameState = this.gameStates.get(gameId);
-    if (!gameState) {
-      console.log(`[GameService] 🔄 Game state not found, syncing with database for game ${gameId}`);
-      await this.syncGameStateWithDatabase(gameId);
-      gameState = this.gameStates.get(gameId);
-      if (!gameState) {
-        throw new Error('Game state not found after sync');
+    if (!this.acquireOperationLock(gameId, `mark_finished_${userId}`)) {
+      console.log(`[GameService] Mark finished already in progress for player ${userId} in game ${gameId}`);
+      
+      const gameState = this.gameStates.get(gameId);
+      const game = await Game.findOne({ where: { id: gameId }, relations: ['players'] });
+      
+      if (gameState && game) {
+        const totalPlayers = game.players.length;
+        const playersFinished = gameState.playersWhoFinished.size;
+        return {
+          allPlayersFinished: playersFinished === totalPlayers,
+          waitingPlayers: totalPlayers - playersFinished,
+          totalPlayers
+        };
       }
     }
 
-    // Vérifier si le joueur était déjà marqué comme fini
-    if (gameState.playersWhoFinished.has(userId)) {
-      console.log(`[GameService] ℹ️ Player ${userId} already marked as finished for game ${gameId}`);
-    } else {
-      gameState.playersWhoFinished.add(userId);
-      console.log(`[GameService] ✅ Player ${userId} marked as finished for round ${gameState.currentRound}`);
+    try {
+      let gameState = this.gameStates.get(gameId);
+      if (!gameState) {
+        console.log(`[GameService] 🔄 Game state not found, syncing with database for game ${gameId}`);
+        await this.syncGameStateWithDatabase(gameId);
+        gameState = this.gameStates.get(gameId);
+        if (!gameState) {
+          throw new Error('Game state not found after sync');
+        }
+      }
+
+      if (gameState.playersWhoFinished.has(userId)) {
+        console.log(`[GameService] ℹ️ Player ${userId} already marked as finished for game ${gameId}`);
+      } else {
+        gameState.playersWhoFinished.add(userId);
+        console.log(`[GameService] ✅ Player ${userId} marked as finished for round ${gameState.currentRound}`);
+      }
+      
+      const game = await Game.findOne({
+        where: { id: gameId },
+        relations: ['players']
+      });
+      
+      if (!game) {
+        throw new Error('Game not found');
+      }
+
+      const totalPlayers = game.players.length;
+      const playersFinished = gameState.playersWhoFinished.size;
+      const allPlayersFinished = playersFinished === totalPlayers;
+      
+      if (allPlayersFinished) {
+        gameState.allPlayersFinished = true;
+        console.log(`[GameService] 🎉 All players finished round ${gameState.currentRound} for game ${gameId}`);
+      }
+
+      gameState.lastActivity = new Date();
+
+      const waitingPlayers = totalPlayers - playersFinished;
+      
+      console.log(`[GameService] 📊 Round ${gameState.currentRound} progress: ${playersFinished}/${totalPlayers} finished`);
+
+      return {
+        allPlayersFinished,
+        waitingPlayers,
+        totalPlayers
+      };
+    } finally {
+      this.releaseOperationLock(gameId, `mark_finished_${userId}`);
     }
-    
-    // Récupérer les informations du jeu pour connaître le nombre total de joueurs
-    const game = await Game.findOne({
-      where: { id: gameId },
-      relations: ['players']
-    });
-    
-    if (!game) {
-      throw new Error('Game not found');
-    }
-
-    const totalPlayers = game.players.length;
-    const playersFinished = gameState.playersWhoFinished.size;
-    const allPlayersFinished = playersFinished === totalPlayers;
-    
-    if (allPlayersFinished) {
-      gameState.allPlayersFinished = true;
-      console.log(`[GameService] 🎉 All players finished round ${gameState.currentRound} for game ${gameId}`);
-    }
-
-    gameState.lastActivity = new Date();
-
-    const waitingPlayers = totalPlayers - playersFinished;
-    
-    console.log(`[GameService] 📊 Round ${gameState.currentRound} progress: ${playersFinished}/${totalPlayers} finished`);
-
-    return {
-      allPlayersFinished,
-      waitingPlayers,
-      totalPlayers
-    };
   }
 
   static async moveToNextRound(gameId: number): Promise<void> {
-    const gameState = this.gameStates.get(gameId);
-    if (!gameState) {
-      console.error(`[GameService] ❌ Game state not found for game ${gameId}`);
-      throw new Error('Game state not found');
+    if (!this.acquireOperationLock(gameId, 'move_next_round')) {
+      console.log(`[GameService] Move to next round already in progress for game ${gameId}`);
+      return;
     }
 
-    const game = await Game.findOne({
-      where: { id: gameId },
-      relations: ['players']
-    });
+    try {
+      const gameState = this.gameStates.get(gameId);
+      if (!gameState) {
+        console.error(`[GameService] ❌ Game state not found for game ${gameId}`);
+        throw new Error('Game state not found');
+      }
 
-    if (!game) {
-      console.error(`[GameService] ❌ Game not found in database: ${gameId}`);
-      throw new Error('Game not found');
+      console.log(`[GameService] Moving from round ${gameState.currentRound} to round ${gameState.currentRound + 1}`);
+
+      const game = await Game.findOne({
+        where: { id: gameId },
+        relations: ['players']
+      });
+
+      if (!game) {
+        console.error(`[GameService] ❌ Game not found in database: ${gameId}`);
+        throw new Error('Game not found');
+      }
+
+      const previousRound = gameState.currentRound;
+      gameState.lastCompletedRound = previousRound;
+      
+      gameState.playersWhoFinishedLastRound = new Set(gameState.playersWhoFinished);
+      
+      gameState.currentRound = Math.min(previousRound + 1, game.rounds_number);
+      
+      gameState.playersWhoFinished.clear();
+      gameState.playersReady.clear();
+      gameState.allPlayersFinished = false;
+      gameState.roundResults.clear();
+      gameState.lastActivity = new Date();
+      
+      console.log(`[GameService] ✅ Successfully moved from round ${previousRound} to round ${gameState.currentRound}`);
+      
+    } finally {
+      this.releaseOperationLock(gameId, 'move_next_round');
     }
-
-    console.log(`[GameService] 🔄 Moving to next round for game ${gameId}`);
-    console.log(`  - Current round: ${gameState.currentRound}`);
-    console.log(`  - Last completed round: ${gameState.lastCompletedRound}`);
-    
-    // CORRECTION: Marquer le round actuel comme complété
-    const previousRound = gameState.currentRound;
-    gameState.lastCompletedRound = previousRound;
-    gameState.currentRound++;
-    
-    // Déplacer les joueurs qui avaient fini vers "finished last round"
-    gameState.playersWhoFinishedLastRound = new Set(gameState.playersWhoFinished);
-    gameState.playersWhoFinished.clear();
-    
-    gameState.playersReady.clear();
-    gameState.allPlayersFinished = false;
-    gameState.roundResults.clear();
-    gameState.lastActivity = new Date();
-    
-    console.log(`[GameService] ✅ Moved from round ${previousRound} to round ${gameState.currentRound} for game ${gameId}`);
-    console.log(`  - Last completed round updated to: ${gameState.lastCompletedRound}`);
-    console.log(`  - Players who finished last round: [${Array.from(gameState.playersWhoFinishedLastRound).join(', ')}]`);
-    console.log(`[GameService] 🧹 Cleared ready and finished states for new round`);
   }
 
   static markPlayerReady(gameId: number, userId: number): { allPlayersReady: boolean } {
-    console.log(`[GameService] 🎯 Marking player ${userId} as ready for game ${gameId}`);
-    
-    let gameState = this.gameStates.get(gameId);
-    if (!gameState) {
-      console.warn(`[GameService] ⚠️ Game state not found for game ${gameId}, attempting to sync with database`);
+    if (!this.acquireOperationLock(gameId, `mark_ready_${userId}`)) {
+      console.log(`[GameService] Mark ready already in progress for player ${userId} in game ${gameId}`);
       
-      gameState = this.initializeGameSync(gameId);
+      const gameState = this.gameStates.get(gameId);
+      if (gameState) {
+        const eligiblePlayers = new Set([
+          ...gameState.playersWhoFinishedLastRound,
+          ...gameState.playersWhoFinished
+        ]);
+        const allPlayersReady = eligiblePlayers.size > 0 && gameState.playersReady.size === eligiblePlayers.size;
+        return { allPlayersReady };
+      }
+      return { allPlayersReady: false };
+    }
+
+    try {
+      console.log(`[GameService] 🎯 Marking player ${userId} as ready for game ${gameId}`);
       
-      this.syncGameStateWithDatabase(gameId).catch(err => {
-        console.error(`[GameService] ❌ Error during background sync:`, err);
-      });
+      let gameState = this.gameStates.get(gameId);
+      if (!gameState) {
+        console.warn(`[GameService] ⚠️ Game state not found for game ${gameId}, attempting to sync with database`);
+        
+        gameState = this.initializeGameSync(gameId);
+        
+        this.syncGameStateWithDatabase(gameId).catch(err => {
+          console.error(`[GameService] ❌ Error during background sync:`, err);
+        });
+      }
+
+      const wasAlreadyReady = gameState.playersReady.has(userId);
+      
+      if (!wasAlreadyReady) {
+        gameState.playersReady.add(userId);
+        console.log(`[GameService] ✅ Player ${userId} marked as ready`);
+      } else {
+        console.log(`[GameService] ℹ️ Player ${userId} was already ready`);
+      }
+
+      gameState.lastActivity = new Date();
+      
+      const playerCanBeReady = gameState.playersWhoFinishedLastRound.has(userId) || 
+                              gameState.playersWhoFinished.has(userId);
+      
+      if (!playerCanBeReady) {
+        console.warn(`[GameService] ⚠️ Player ${userId} marked as ready but hasn't finished required rounds`);
+      }
+      
+      const eligiblePlayers = new Set([
+        ...gameState.playersWhoFinishedLastRound,
+        ...gameState.playersWhoFinished
+      ]);
+      
+      const playersWhoAreReady = gameState.playersReady.size;
+      const allPlayersReady = eligiblePlayers.size > 0 && playersWhoAreReady === eligiblePlayers.size;
+
+      console.log(`[GameService] 📊 Ready Status Check:`);
+      console.log(`  - Eligible players (finished last or current): ${eligiblePlayers.size}`);
+      console.log(`  - Players ready: ${playersWhoAreReady}`);
+      console.log(`  - All eligible players ready: ${allPlayersReady}`);
+
+      return { allPlayersReady };
+    } finally {
+      this.releaseOperationLock(gameId, `mark_ready_${userId}`);
     }
-
-    const wasAlreadyReady = gameState.playersReady.has(userId);
-    
-    if (!wasAlreadyReady) {
-      gameState.playersReady.add(userId);
-      console.log(`[GameService] ✅ Player ${userId} marked as ready`);
-    } else {
-      console.log(`[GameService] ℹ️ Player ${userId} was already ready`);
-    }
-
-    gameState.lastActivity = new Date();
-    
-    // CORRECTION CRITIQUE: Vérifier si le joueur peut être ready
-    // Un joueur peut être ready s'il a fini le dernier round complété OU le round actuel
-    const playerCanBeReady = gameState.playersWhoFinishedLastRound.has(userId) || 
-                            gameState.playersWhoFinished.has(userId);
-    
-    if (!playerCanBeReady) {
-      console.warn(`[GameService] ⚠️ Player ${userId} marked as ready but hasn't finished required rounds`);
-    }
-    
-    // CORRECTION: Calculer si tous les joueurs qui PEUVENT être ready sont ready
-    const eligiblePlayers = new Set([
-      ...gameState.playersWhoFinishedLastRound,
-      ...gameState.playersWhoFinished
-    ]);
-    
-    const playersWhoAreReady = gameState.playersReady.size;
-    const allPlayersReady = eligiblePlayers.size > 0 && playersWhoAreReady === eligiblePlayers.size;
-
-    console.log(`[GameService] 📊 Ready Status Check:`);
-    console.log(`  - Eligible players (finished last or current): ${eligiblePlayers.size}`);
-    console.log(`  - Players ready: ${playersWhoAreReady}`);
-    console.log(`  - All eligible players ready: ${allPlayersReady}`);
-    console.log(`  - Last completed round: ${gameState.lastCompletedRound}`);
-    console.log(`  - Current round: ${gameState.currentRound}`);
-    console.log(`  - Players finished last round: [${Array.from(gameState.playersWhoFinishedLastRound).join(', ')}]`);
-    console.log(`  - Players finished current: [${Array.from(gameState.playersWhoFinished).join(', ')}]`);
-    console.log(`  - Players ready: [${Array.from(gameState.playersReady).join(', ')}]`);
-
-    return { allPlayersReady };
   }
 
   static getRoundResults(gameId: number): Map<number, GuessResult> {
@@ -471,9 +519,75 @@ export class GameService {
     const gameState = this.gameStates.get(gameId);
     if (gameState) {
       this.gameStates.delete(gameId);
+      this.operationLocks.delete(gameId);
       console.log(`[GameService] Cleaned up sync state for game ${gameId}`);
     } else {
       console.warn(`[GameService] Attempted to cleanup non-existent game state for game ${gameId}`);
+    }
+  }
+
+  static async processGuessWithSync(
+    gameId: number,
+    relativeId: number,
+    userId: number,
+    country: string
+  ): Promise<SyncGuessResult> {
+    console.log(`[GameService] Processing guess for game ${gameId}, round ${relativeId}, user ${userId}, country: ${country}`);
+    
+    const existingGuesses = await Guess.createQueryBuilder('guess')
+      .leftJoinAndSelect('guess.round', 'round')
+      .where('guess.gameId = :gameId', { gameId })
+      .andWhere('guess.userId = :userId', { userId })
+      .orderBy('guess.id', 'ASC')
+      .getMany();
+    
+    console.log(`[GameService] 📋 Existing guesses for user ${userId}:`);
+    existingGuesses.forEach(guess => {
+      console.log(`  - Round ${guess.round.relative_id}: ${guess.country_code}`);
+    });
+
+    if (!this.acquireOperationLock(gameId, `guess_${userId}_${relativeId}`)) {
+      console.warn(`[GameService] ⚠️ Guess submission already in progress for player ${userId} round ${relativeId} in game ${gameId}`);
+      throw new Error("Guess submission already in progress");
+    }
+
+    try {
+      const existingGuess = await Guess.createQueryBuilder('guess')
+        .leftJoinAndSelect('guess.round', 'round')
+        .where('guess.gameId = :gameId', { gameId })
+        .andWhere('guess.userId = :userId', { userId })
+        .andWhere('round.relative_id = :relativeId', { relativeId })
+        .getOne();
+
+      if (existingGuess) {
+        console.warn(`[GameService] ⚠️ Player ${userId} already submitted guess for round ${relativeId} in game ${gameId}`);
+        console.warn(`[GameService] 📝 Existing guess: ${existingGuess.country_code} (ID: ${existingGuess.id})`);
+        throw new Error("You have already submitted a guess for this round");
+      }
+
+      const guessResult = await this.processGuess(gameId, relativeId, userId, country);
+      
+      const syncResult = await this.markPlayerFinishedRound(gameId, userId);
+      
+      const gameStateAfter = this.gameStates.get(gameId);
+      if (gameStateAfter) {
+        gameStateAfter.roundResults.set(userId, guessResult);
+        gameStateAfter.lastActivity = new Date();
+        
+        console.log(`[GameService] 💾 Saved guess result for player ${userId} in game ${gameId}`);
+        console.log(`[GameService] 📊 Round status: ${gameStateAfter.playersWhoFinished.size}/${syncResult.totalPlayers} finished`);
+      } else {
+        console.warn(`[GameService] ⚠️ No game state found to save result for game ${gameId}`);
+      }
+
+      return {
+        ...guessResult,
+        roundComplete: syncResult.allPlayersFinished,
+        waitingPlayers: syncResult.waitingPlayers,
+        totalPlayers: syncResult.totalPlayers
+      };
+    } finally {
+      this.releaseOperationLock(gameId, `guess_${userId}_${relativeId}`);
     }
   }
 
@@ -729,52 +843,6 @@ export class GameService {
     };
   }
 
-  static async processGuessWithSync(
-    gameId: number,
-    relativeId: number,
-    userId: number,
-    country: string
-  ): Promise<SyncGuessResult> {
-    // Vérifier si le joueur a déjà soumis une réponse pour ce round
-    const existingGuess = await Guess.findOne({
-      where: {
-        game: { id: gameId },
-        round: { relative_id: relativeId },
-        user: { id: userId }
-      }
-    });
-
-    if (existingGuess) {
-      console.warn(`[GameService] ⚠️ Player ${userId} already submitted guess for round ${relativeId} in game ${gameId}`);
-      throw new Error("You have already submitted a guess for this round");
-    }
-
-    // Traiter la réponse normalement
-    const guessResult = await this.processGuess(gameId, relativeId, userId, country);
-    
-    // Marquer le joueur comme ayant fini le round
-    const syncResult = await this.markPlayerFinishedRound(gameId, userId);
-    
-    // Sauvegarder le résultat dans l'état de synchronisation
-    const gameState = this.gameStates.get(gameId);
-    if (gameState) {
-      gameState.roundResults.set(userId, guessResult);
-      gameState.lastActivity = new Date();
-      
-      console.log(`[GameService] 💾 Saved guess result for player ${userId} in game ${gameId}`);
-      console.log(`[GameService] 📊 Round status: ${gameState.playersWhoFinished.size}/${syncResult.totalPlayers} finished`);
-    } else {
-      console.warn(`[GameService] ⚠️ No game state found to save result for game ${gameId}`);
-    }
-
-    return {
-      ...guessResult,
-      roundComplete: syncResult.allPlayersFinished,
-      waitingPlayers: syncResult.waitingPlayers,
-      totalPlayers: syncResult.totalPlayers
-    };
-  }
-
   static async checkAllPlayersFinishedGame(gameId: number): Promise<boolean> {
     const game = await Game.findOne({
       where: { id: gameId },
@@ -786,19 +854,38 @@ export class GameService {
     const totalRounds = game.rounds_number;
     const playerIds = game.players.map(p => p.id);
     
+    console.log(`[GameService] 🔍 Checking if all players finished game ${gameId}:`);
+    console.log(`  - Total rounds: ${totalRounds}`);
+    console.log(`  - Players to check: [${playerIds.join(', ')}]`);
+    
     const playerGuessesCount = await Promise.all(
-      playerIds.map(async (playerId) => {
-        const guessCount = await Guess.count({
-          where: {
-            game: { id: gameId },
-            user: { id: playerId }
-          }
-        });
-        return { playerId, guessCount };
+      game.players.map(async (player) => {
+        const guessCount = await Guess.createQueryBuilder('guess')
+          .where('guess.gameId = :gameId', { gameId })
+          .andWhere('guess.userId = :userId', { userId: player.id })
+          .getCount();
+        
+        const directCount = await Guess.createQueryBuilder('guess')
+          .where('guess.gameId = :gameId', { gameId })
+          .andWhere('guess.userId = :userId', { userId: player.id })
+          .getCount();
+        
+        console.log(`[GameService] Player ${player.name} (${player.id}): ${guessCount} guesses (direct: ${directCount})`);
+        
+        return { playerId: player.id, playerName: player.name, guessCount: Math.max(guessCount, directCount) };
       })
     );
     
-    return playerGuessesCount.every(({ guessCount }) => guessCount === totalRounds);
+    const allFinished = playerGuessesCount.every(({ guessCount }) => guessCount >= totalRounds);
+    
+    console.log(`[GameService] 🎯 Final check result:`);
+    playerGuessesCount.forEach(({ playerName, guessCount }) => {
+      const finished = guessCount >= totalRounds;
+      console.log(`  - ${playerName}: ${guessCount}/${totalRounds} (${finished ? '✅ FINISHED' : '❌ NOT FINISHED'})`);
+    });
+    console.log(`[GameService] All players finished: ${allFinished}`);
+    
+    return allFinished;
   }
 
   static async finishGameIfAllPlayersReady(gameId: number): Promise<{
