@@ -23,6 +23,7 @@ interface WallpaperData {
   country: { code: string; text: string };
   state?: { code: string | undefined; text: string | undefined };
   imageLink?: string;
+  tags?: string[];
 }
 
 interface CountryState {
@@ -33,7 +34,8 @@ interface CountryState {
 interface Country {
   name: string;
   code3: string;
-  continent?: string;
+  region: string;        // "Europe", "Asia", "Africa", etc.
+  subregion: string;     // "Western Europe", "Southern Asia", etc.
   states?: CountryState[];
 }
 
@@ -43,8 +45,8 @@ class WallpaperScraper {
   static loadCountryData(): Country[] {
     try {
       const countryPath = process.env.NODE_ENV === 'production' 
-      ? '/app/countries.json'
-      : './countries.json';
+        ? '/app/countries.json'
+        : './countries.json';
       const countryDataRaw = fs.readFileSync(countryPath, 'utf8');
       return JSON.parse(countryDataRaw);
     } catch (error) {
@@ -69,7 +71,7 @@ class WallpaperScraper {
     });
   }
 
-  static async getCountryOrStateDetails(title: string): Promise<{ country: any, state: any | undefined }> {
+  static async getCountryOrStateDetails(title: string): Promise<{ country: any, state: any | undefined, fullCountryData?: Country }> {
     const countryData = this.loadCountryData();
     
     for (const country of countryData) {
@@ -77,9 +79,11 @@ class WallpaperScraper {
         const foundState = country.states?.find((state: CountryState) => 
           title.includes(state.name)
         );
+        
         return {
           country: { code: country.code3, text: country.name },
-          state: foundState ? { code: foundState.code, text: foundState.name } : undefined
+          state: foundState ? { code: foundState.code, text: foundState.name } : undefined,
+          fullCountryData: country
         };
       }
     }
@@ -87,9 +91,58 @@ class WallpaperScraper {
     return { country: undefined, state: undefined };
   }
 
+  // Génère les tags en utilisant les données de countries.json
+  static generateTags(countryName: string, stateName?: string, fullCountryData?: Country): string[] {
+    const tags: string[] = ['World']; // Toujours ajouter "World"
+    
+    // Ajouter le nom du pays
+    if (countryName) {
+      tags.push(countryName);
+    }
+    
+    // Ajouter l'état si présent
+    if (stateName) {
+      tags.push(stateName);
+    }
+    
+    // Ajouter la région depuis countries.json
+    if (fullCountryData?.region) {
+      // Mapper les régions de countries.json vers nos régions de jeu
+      const regionMapping: Record<string, string> = {
+        'Europe': 'Europe',
+        'Asia': 'Asia', 
+        'Africa': 'Africa',
+        'Americas': 'North America', // Par défaut
+        'Oceania': 'Oceania'
+      };
+      
+      let gameRegion = regionMapping[fullCountryData.region];
+      
+      // Affiner pour les Amériques en utilisant le subregion
+      if (fullCountryData.region === 'Americas') {
+        if (fullCountryData.subregion?.includes('South')) {
+          gameRegion = 'South America';
+        } else {
+          gameRegion = 'North America';
+        }
+      }
+      
+      if (gameRegion) {
+        tags.push(gameRegion);
+        console.log(`[TAGS] ✅ Région mappée: ${fullCountryData.region} -> ${gameRegion} pour ${countryName}`);
+      }
+    } else {
+      console.warn(`[TAGS] ⚠️ Aucune région trouvée dans countries.json pour: ${countryName}`);
+    }
+    
+    console.log(`[TAGS] 🏷️ Tags générés pour ${countryName}: [${tags.join(', ')}]`);
+    return tags;
+  }
+
   static async sendToAPI(wallpaperData: WallpaperData): Promise<void> {
     try {
       console.log(`[SEND_API] 📤 Envoi vers l'API: ${wallpaperData.title}`);
+      console.log(`[SEND_API] 🏷️ Tags: [${wallpaperData.tags?.join(', ')}]`);
       
       const response = await fetch(`${this.API_SERVICE_URL}/wallpaper/receive`, {
         method: 'POST',
@@ -169,13 +222,21 @@ class WallpaperScraper {
         console.log(`[SCRAPER] ✅ État détecté: ${details.state.text}`);
       }
 
+      // Générer les tags automatiquement
+      const tags = this.generateTags(
+        details.country.text, 
+        details.state?.text, 
+        details.fullCountryData
+      );
+
       const wallpaperData: WallpaperData = {
         title,
         img: localPath,
         copyright,
         country: details.country,
         state: details.state,
-        imageLink: imgUrl
+        imageLink: imgUrl,
+        tags // Inclure les tags générés
       };
 
       console.log("[SCRAPER] 📤 Envoi des données vers l'API...");
@@ -289,28 +350,6 @@ cron.schedule('0 * * * *', async () => {
     lastCronError = error instanceof Error ? error.message : String(error);
   }
 });
-
-// Scrape immédiat au lancement du service
-(async () => {
-  try {
-    console.log('[CRON] ⏩ Scraping bulk immédiat au démarrage du service...');
-    const response = await fetch('http://localhost:3301/scrape/bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ times: 50 })
-    });
-    const result = await response.json();
-    console.log('[CRON] ✅ Réponse du bulk (au démarrage):', result);
-    lastCronStatus = 'success';
-    lastCronTime = new Date().toISOString();
-    lastCronError = null;
-  } catch (error) {
-    console.error('[CRON] ❌ Erreur lors du bulk wallpaper scraping (au démarrage):', error);
-    lastCronStatus = 'error';
-    lastCronTime = new Date().toISOString();
-    lastCronError = error instanceof Error ? error.message : String(error);
-  }
-})();
 
 // Route de contrôle du cron
 app.get('/cron-status', (req, res) => {

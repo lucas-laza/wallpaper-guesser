@@ -7,32 +7,26 @@ export class Wallpaper extends BaseEntity {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column()
+  @Column({ nullable: false })
   title!: string;
 
-  @Column()
+  @Column({ nullable: false })
   img!: string;
 
   @Column({ nullable: true })
   image_link?: string;
 
-  @Column()
+  @Column({ nullable: false })
   copyright!: string;
 
-  @Column({ type: 'json', nullable: false })
-  country!: {
-    code: string;
-    text: string;
-  };
+  @Column({ type: "json", nullable: false })
+  country!: { code: string; text: string };
 
-  @Column({ type: 'json', nullable: true })
-  state?: {
-    code: string | undefined;
-    text: string | undefined;
-  };
+  @Column({ type: "json", nullable: true })
+  state?: { code: string | undefined; text: string | undefined };
 
-  @Column({ type: 'json', nullable: false })
-  tags!: string[];
+  @Column({ type: "json", nullable: true })
+  tags?: string[];
 
   // Charger les données countries.json
   static loadCountryData() {
@@ -62,30 +56,46 @@ export class Wallpaper extends BaseEntity {
   /**
    * Crée un nouveau wallpaper depuis les données reçues du service wallpaper
    */
-  static async createFromWallpaperService(data: {
+  static async createFromWallpaperService(wallpaperData: {
     title: string;
     img: string;
     copyright: string;
     country: { code: string; text: string };
     state?: { code: string | undefined; text: string | undefined };
     imageLink?: string;
+    tags?: string[];
   }): Promise<Wallpaper> {
+    console.log("[WALLPAPER_CREATE] 📝 Création d'un nouveau wallpaper:", wallpaperData.title);
+    console.log("[WALLPAPER_CREATE] 🏷️ Tags reçus:", wallpaperData.tags);
+    
     const wallpaper = new Wallpaper();
-    wallpaper.title = data.title;
-    wallpaper.img = data.img;
-    wallpaper.image_link = data.imageLink;
-    wallpaper.copyright = data.copyright;
-    wallpaper.country = data.country;
-    wallpaper.state = data.state;
-
-    console.log("[CREATE] 🏷️ Génération des tags...");
-    wallpaper.tags = wallpaper.generateTags();
-    console.log("[CREATE] ✅ Tags générés:", wallpaper.tags);
-
-    console.log("[CREATE] 💾 Enregistrement en base...");
+    wallpaper.title = wallpaperData.title;
+    wallpaper.img = wallpaperData.img;
+    wallpaper.image_link = wallpaperData.imageLink || wallpaperData.img;
+    wallpaper.copyright = wallpaperData.copyright;
+    wallpaper.country = wallpaperData.country;
+    wallpaper.state = wallpaperData.state || undefined;
+    
+    // Utiliser les tags fournis ou générer des tags par défaut
+    if (wallpaperData.tags && wallpaperData.tags.length > 0) {
+      wallpaper.tags = wallpaperData.tags;
+      console.log("[WALLPAPER_CREATE] ✅ Tags assignés:", wallpaperData.tags);
+    } else {
+      // Fallback: générer des tags basiques si aucun tag fourni
+      const basicTags = ['World'];
+      if (wallpaperData.country?.text) {
+        basicTags.push(wallpaperData.country.text);
+      }
+      if (wallpaperData.state?.text) {
+        basicTags.push(wallpaperData.state.text);
+      }
+      wallpaper.tags = basicTags;
+      console.log("[WALLPAPER_CREATE] ⚠️ Aucun tag fourni, tags basiques générés:", basicTags);
+    }
+    
     await wallpaper.save();
-    console.log("[CREATE] ✅ Wallpaper enregistré avec ID:", wallpaper.id);
-
+    console.log("[WALLPAPER_CREATE] 💾 Wallpaper sauvegardé avec ID:", wallpaper.id);
+    
     return wallpaper;
   }
 
@@ -189,11 +199,11 @@ export class Wallpaper extends BaseEntity {
     return await this.find();
   }
 
-  // Méthodes de recherche par tags
+  // Méthodes de recherche par tags - CORRIGÉE
   static async getByTags(tags: string[]): Promise<Wallpaper[]> {
     const wallpapers = await this.find();
     return wallpapers.filter(wallpaper => 
-      tags.some(tag => wallpaper.tags.includes(tag))
+      wallpaper.tags && tags.some(tag => wallpaper.tags!.includes(tag))
     );
   }
 
@@ -212,7 +222,8 @@ export class Wallpaper extends BaseEntity {
     
     for (const wallpaper of wallpapers) {
       await wallpaper.updateTags();
-      console.log(`[UPDATE_TAGS] ✅ Tags mis à jour pour: ${wallpaper.title} - ${wallpaper.tags.join(', ')}`);
+      const tags = wallpaper.tags || [];
+      console.log(`[UPDATE_TAGS] ✅ Tags mis à jour pour: ${wallpaper.title} - ${tags.join(', ')}`);
     }
     
     console.log(`[UPDATE_TAGS] 🎉 Terminé! ${wallpapers.length} wallpapers mis à jour.`);

@@ -71,7 +71,7 @@ export class WallpaperService {
   }
   
   static isWallpaperValid(wallpaper: Wallpaper): boolean {
-    return !!(
+    const isValid = !!(
       wallpaper &&
       wallpaper.id &&
       wallpaper.title &&
@@ -81,6 +81,18 @@ export class WallpaperService {
       wallpaper.tags &&
       wallpaper.tags.length > 0
     );
+    
+    if (!isValid) {
+      console.log(`[WallpaperService] Invalid wallpaper:`, {
+        id: wallpaper?.id,
+        hasTitle: !!wallpaper?.title,
+        hasImg: !!wallpaper?.img,
+        hasCountry: !!wallpaper?.country?.text,
+        hasTags: !!(wallpaper?.tags && wallpaper.tags.length > 0)
+      });
+    }
+    
+    return isValid;
   }
 }
 
@@ -835,7 +847,7 @@ export class GameService {
         country: round.wallpaper.country,
         state: round.wallpaper.state,
         title: round.wallpaper.title,
-        tags: round.wallpaper.tags
+        tags: round.wallpaper.tags || [] // CORRECTION ICI - ajouter || []
       },
       userGuess: {
         country: country
