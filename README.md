@@ -130,7 +130,6 @@ GET  /user/profile    # Profil (auth required)
 
 # Wallpapers
 POST /wallpaper                    # Déclencher 1 scraping
-POST /wallpaper/bulk              # Scraping en masse
 GET  /wallpaper/by-tags?tags=...  # Recherche par tags
 GET  /wallpaper/tags              # Liste des tags
 GET  /maps                        # Continents disponibles

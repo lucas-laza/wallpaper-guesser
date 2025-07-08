@@ -12,8 +12,9 @@ COPY tsconfig.json ./
 # Installer les dépendances
 RUN npm install
 
-# Copier le code source
+# Copier le code source ET le fichier countries.json
 COPY src/ ./src/
+COPY countries.json ./
 
 # Compiler TypeScript
 RUN npm run build

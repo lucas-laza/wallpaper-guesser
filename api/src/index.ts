@@ -34,6 +34,117 @@ const dataSource = new DataSource({
 
 const PORT = 3300;
 
+// NOUVELLES FONCTIONS D'INITIALISATION
+async function initializeDatabase() {
+  console.log("🔄 Vérification de l'état de la base de données...");
+  
+  try {
+    const wallpaperCount = await Wallpaper.count();
+    console.log(`📊 Wallpapers actuels en base: ${wallpaperCount}`);
+    
+    const MIN_WALLPAPERS = 100;
+    
+    if (wallpaperCount < MIN_WALLPAPERS) {
+      const needed = MIN_WALLPAPERS - wallpaperCount;
+      console.log(`🚀 Lancement du scraping initial pour ${needed} wallpapers...`);
+      
+      // Lancer l'initialisation en arrière-plan (non-bloquant)
+      initializeInBackground(needed).catch(error => {
+        console.error("❌ Erreur lors de l'initialisation en arrière-plan:", error);
+      });
+      
+    } else {
+      console.log(`✅ Base de données suffisamment peuplée (${wallpaperCount} wallpapers)`);
+      // Corriger les tags en arrière-plan
+      // fixRegionalTags().catch(error => {
+      //   console.error("⚠️ Erreur lors de la correction des tags:", error);
+      // });
+    }
+    
+  } catch (error) {
+    console.error("❌ Erreur lors de l'initialisation de la base de données:", error);
+    // Ne pas arrêter le serveur, juste log l'erreur
+  }
+}
+
+async function initializeInBackground(needed: number) {
+  try {
+    // Attendre que le service wallpaper soit prêt
+    await waitForWallpaperService();
+    
+    // Déclencher le scraping
+    await Wallpaper.triggerBulkScraping(needed);
+    
+    console.log(`✅ Scraping initial terminé!`);
+    
+    // Corriger les tags régionaux
+    // await fixRegionalTags();
+    
+  } catch (error) {
+    console.error("❌ Erreur lors de l'initialisation en arrière-plan:", error);
+  }
+}
+
+
+async function waitForWallpaperService(maxRetries: number = 15, delayMs: number = 5000) {
+  const wallpaperServiceUrl = process.env.WALLPAPER_SERVICE_URL || 'http://localhost:3301';
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      console.log(`🔍 Tentative ${i + 1}/${maxRetries}: Vérification du service wallpaper...`);
+      const response = await fetch(`${wallpaperServiceUrl}/health`);
+      
+      if (response.ok) {
+        console.log("✅ Service wallpaper prêt!");
+        return;
+      }
+    } catch (error) {
+      // Service pas encore prêt
+    }
+    
+    if (i < maxRetries - 1) {
+      console.log(`⏳ Service wallpaper pas encore prêt, nouvelle tentative dans ${delayMs/1000}s...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  
+  console.warn("⚠️ Service wallpaper non disponible, initialisation reportée");
+}
+
+// async function fixRegionalTags() {
+//   console.log("🔄 Vérification des tags régionaux...");
+  
+//   try {
+//     // Compter les wallpapers sans tags régionaux appropriés
+//     const allWallpapers = await Wallpaper.getAll();
+//     let wallpapersNeedingUpdate = 0;
+    
+//     for (const wallpaper of allWallpapers) {
+//       const tags = wallpaper.tags || [];
+//       const hasRegionalTag = tags.some(tag => 
+//         ['Europe', 'Asia', 'Africa', 'North America', 'South America', 'Oceania'].includes(tag)
+//       );
+      
+//       if (!hasRegionalTag && tags.length <= 2) { // Seulement "World" + pays
+//         wallpapersNeedingUpdate++;
+//       }
+//     }
+    
+//     if (wallpapersNeedingUpdate > 0) {
+//       console.log(`🏷️ ${wallpapersNeedingUpdate} wallpapers sans tags régionaux détectés`);
+//       console.log("🔄 Mise à jour des tags...");
+      
+//       await Wallpaper.updateAllTags();
+      
+//       console.log("✅ Tags régionaux mis à jour!");
+//     } else {
+//       console.log("✅ Tous les wallpapers ont déjà des tags régionaux");
+//     }
+//   } catch (error) {
+//     console.error("⚠️ Erreur lors de la mise à jour des tags:", error);
+//   }
+// }
+
 async function main() {
   console.log("🔄 Connexion à la base de données...");
   
@@ -55,6 +166,9 @@ async function main() {
       }
     }
   }
+  
+  // INITIALISATION AUTOMATIQUE DE LA BASE DE DONNÉES
+  await initializeDatabase();
   
   const app = express();
   const httpServer = createServer(app);
@@ -191,26 +305,26 @@ async function main() {
   });
 
   // Routes wallpaper - proxy vers le service wallpaper
-  app.post("/wallpaper", async (req, res) => {
-    try {
-      await Wallpaper.triggerScraping();
-      res.json({ message: "Wallpaper fetched and saved successfully." });
-    } catch (error) {
-      console.error("Error triggering wallpaper scraping:", error);
-      res.status(500).json({ error: "Internal Server Error" });
-    }
-  });
+  // app.post("/wallpaper", async (req, res) => {
+  //   try {
+  //     await Wallpaper.triggerScraping();
+  //     res.json({ message: "Wallpaper fetched and saved successfully." });
+  //   } catch (error) {
+  //     console.error("Error triggering wallpaper scraping:", error);
+  //     res.status(500).json({ error: "Internal Server Error" });
+  //   }
+  // });
 
-  app.post("/wallpaper/bulk", async (req, res) => {
-    const times = req.body.times ?? 10;
-    try {
-      await Wallpaper.triggerBulkScraping(times);
-      res.json({ message: `${times} wallpapers fetched and saved.` });
-    } catch (error) {
-      console.error("Error in bulk wallpaper fetch:", error);
-      res.status(500).json({ error: "Internal Server Error" });
-    }
-  });
+  // app.post("/wallpaper/bulk", async (req, res) => {
+  //   const times = req.body.times ?? 10;
+  //   try {
+  //     await Wallpaper.triggerBulkScraping(times);
+  //     res.json({ message: `${times} wallpapers fetched and saved.` });
+  //   } catch (error) {
+  //     console.error("Error in bulk wallpaper fetch:", error);
+  //     res.status(500).json({ error: "Internal Server Error" });
+  //   }
+  // });
 
   // Route pour recevoir les données du service wallpaper
   app.post("/wallpaper/receive", async (req, res) => {
@@ -246,6 +360,94 @@ async function main() {
     } catch (error) {
       console.error("Error updating tags:", error);
       res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.post("/wallpaper/populate-if-needed", async (req, res) => {
+    try {
+      console.log("🔄 Vérification du besoin de peuplement...");
+      
+      const currentCount = await Wallpaper.count();
+      const minRequired = req.body.minCount || 50;
+      
+      console.log(`📊 Wallpapers actuels: ${currentCount}, minimum requis: ${minRequired}`);
+      
+      if (currentCount < minRequired) {
+        const needed = minRequired - currentCount;
+        console.log(`🚀 Peuplement nécessaire: ${needed} wallpapers`);
+        
+        // Vérifier que le service wallpaper est disponible
+        const wallpaperServiceUrl = process.env.WALLPAPER_SERVICE_URL || 'http://localhost:3301';
+        
+        try {
+          const healthCheck = await fetch(`${wallpaperServiceUrl}/health`);
+          if (!healthCheck.ok) {
+            throw new Error("Service wallpaper non disponible");
+          }
+        } catch (error) {
+          return res.status(503).json({ 
+            error: "Service wallpaper non disponible", 
+            details: error instanceof Error ? error.message : String(error)
+          });
+        }
+        
+        // Déclencher le scraping
+        await Wallpaper.triggerBulkScraping(needed);
+        
+        // Mettre à jour les tags
+        await Wallpaper.updateAllTags();
+        
+        const newCount = await Wallpaper.count();
+        
+        res.json({
+          message: "Database populated successfully",
+          before: currentCount,
+          after: newCount,
+          added: newCount - currentCount,
+          required: minRequired
+        });
+      } else {
+        // Juste mettre à jour les tags si nécessaire
+        await Wallpaper.updateAllTags();
+        
+        res.json({
+          message: "Database already sufficiently populated",
+          current: currentCount,
+          required: minRequired,
+          status: "no_action_needed"
+        });
+      }
+    } catch (error) {
+      console.error("Erreur lors du peuplement:", error);
+      res.status(500).json({ 
+        error: "Population failed", 
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // Route pour forcer le peuplement
+  app.post("/wallpaper/force-populate", async (req, res) => {
+    try {
+      const count = req.body.count || 50;
+      console.log(`🚀 Peuplement forcé: ${count} wallpapers`);
+      
+      await Wallpaper.triggerBulkScraping(count);
+      await Wallpaper.updateAllTags();
+      
+      const newTotal = await Wallpaper.count();
+      
+      res.json({
+        message: "Forced population completed",
+        requested: count,
+        totalWallpapers: newTotal
+      });
+    } catch (error) {
+      console.error("Erreur lors du peuplement forcé:", error);
+      res.status(500).json({ 
+        error: "Forced population failed", 
+        details: error instanceof Error ? error.message : String(error)
+      });
     }
   });
 
