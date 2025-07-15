@@ -515,12 +515,10 @@ soloGameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authent
     const { country } = req.body;
     const userId = req.user!.userId;
 
-    if (!country) {
-      return res.status(400).json({ error: "Missing required field: country" });
-    }
+    const userCountry = country || "";
 
     const round = await Round.findOne({
-      where: { 
+      where: {
         relative_id: parseInt(relativeId),
         game: { id: parseInt(gameId) }
       },
@@ -549,15 +547,15 @@ soloGameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authent
 
     // Vérifier si la réponse est correcte
     const correctCountry = round.wallpaper.country.text;
-    const isCorrect = country.toLowerCase().trim() === correctCountry.toLowerCase().trim();
-    
+    const isCorrect = userCountry.toLowerCase().trim() === correctCountry.toLowerCase().trim();
+
     // Système de points basé sur la justesse de la réponse
     const score = isCorrect ? 1000 : 0;
 
     // Incrementer le nombre de tentatives
     round.guesses += 1;
     await round.save();
-
+    
     // Révéler la bonne réponse
     const result = {
       roundId: round.id,
@@ -572,7 +570,7 @@ soloGameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authent
         tags: round.wallpaper.tags
       },
       userGuess: {
-        country: country
+        country: userCountry
       }
     };
 

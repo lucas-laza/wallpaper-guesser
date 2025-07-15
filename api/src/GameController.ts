@@ -318,9 +318,8 @@ gameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authenticat
     const { country } = req.body;
     const userId = req.user!.userId;
 
-    if (!country) {
-      return res.status(400).json({ error: "Missing required field: country" });
-    }
+    // Si country n'est pas fourni, on le traite comme une chaîne vide (mauvaise réponse)
+    const userCountry = country || "";
 
     const game = await Game.findOne({
       where: { id: parseInt(gameId) },
@@ -335,20 +334,20 @@ gameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authenticat
 
     if (isMultiplayer) {
       console.log(`[GameController] Multiplayer detected for game ${gameId}, using sync processing`);
-      
+
       const result = await GameService.processGuessWithSync(
         parseInt(gameId),
         parseInt(relativeId),
         userId,
-        country
+        userCountry
       );
-
+      
       // AJOUT : Broadcaster via WebSocket quand le round se termine via HTTP
       if (result.roundComplete && game.party) {
         console.log(`[GameController] 🏁 Round completed via HTTP for party ${game.party.id}, broadcasting via WebSocket`);
-        
+
         const webSocketService = req.app.locals.webSocketService;
-        
+
         if (webSocketService) {
           // Broadcast à tous les joueurs que le round est terminé
           webSocketService.broadcastToParty(game.party.id, 'round_completed', {
@@ -368,7 +367,7 @@ gameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authenticat
           });
         }
       }
-
+      
       return res.json({
         roundId: result.roundId,
         relative_id: result.relative_id,
@@ -384,14 +383,14 @@ gameRouter.post("/game/:gameId/round/:relativeId/guess", async (req: Authenticat
       });
     } else {
       console.log(`[GameController] Solo game detected for game ${gameId}, using normal processing`);
-      
-      const result = await GameService.processGuess(
-        parseInt(gameId), 
-        parseInt(relativeId), 
-        userId, 
-        country
-      );
 
+      const result = await GameService.processGuess(
+        parseInt(gameId),
+        parseInt(relativeId),
+        userId,
+        userCountry
+      );
+      
       return res.json({
         ...result,
         isMultiplayer: false
