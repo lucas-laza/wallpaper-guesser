@@ -8,7 +8,7 @@ const Home = () => {
   const regions = ['World', 'Europe', 'Asia'];
 
   return (
-    <BackgroundImage src="https://images.pexels.com/photos/1563356/pexels-photo-1563356.jpeg?auto=compress&cs=tinysrgb&w=1920&h=1080&fit=crop">
+    <BackgroundImage src="src/assets/maroc.jpeg">
       <div className="min-h-screen flex flex-col justify-end p-6">
         <div className="flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
           
@@ -19,7 +19,7 @@ const Home = () => {
                 About this wallpaper:
               </h3>
               <h2 className="text-white text-xl font-bold mb-3">
-                Tataouine, Tunisia | credit: Windows Spotlight
+               Vallée des roses, Maroc | credit: Windows Spotlight
               </h2>
               <p className="text-white/80 text-sm leading-relaxed">
                 This game is inspired by the Windows Spotlight wallpapers. All wallpapers are 
