@@ -20,7 +20,7 @@ const Home = () => {
                 About this wallpaper:
               </h3>
               <h2 className="text-white text-xl font-bold mb-3">
-               Vallée des roses, Maroc | credit: Windows Spotlight
+               Rose Valley, Morocco | credit: Windows Spotlight
               </h2>
               <p className="text-white/80 text-sm leading-relaxed">
                 This game is inspired by the Windows Spotlight wallpapers. All wallpapers are 
