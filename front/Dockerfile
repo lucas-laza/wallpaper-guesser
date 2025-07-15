@@ -1,44 +1,33 @@
-# Dockerfile optimisé pour éviter les blocages npm
-FROM node:20-alpine AS builder
+# Étape 1 : Build de l'application
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Configuration npm pour éviter les blocages
-ENV NPM_CONFIG_PROGRESS=false
-ENV NPM_CONFIG_LOGLEVEL=warn
-ENV NPM_CONFIG_AUDIT=false
-ENV NPM_CONFIG_FUND=false
-ENV CI=true
+# Copie des fichiers de dépendances
+COPY package.json package-lock.json ./
 
-# Mise à jour npm et nettoyage
-RUN npm install -g npm@latest && npm cache clean --force
+# Installation des dépendances
+RUN npm ci --prefer-offline --include=optional
 
-# Copier seulement package.json d'abord
-COPY package.json ./
-
-# Générer package-lock.json s'il n'existe pas
-RUN npm install --package-lock-only
-
-# Copier package-lock.json s'il existe
-COPY package-lock.json* ./
-
-# Installation avec options de robustesse
-RUN npm ci --prefer-offline --no-audit --no-fund --legacy-peer-deps || \
-    npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
-
-# Copier le reste du code
+# Copie du reste des fichiers
 COPY . .
 
-# Build
+# Build de l'application
 RUN npm run build
 
-# Production stage
-FROM nginx:alpine
+# Étape 2 : Serveur NGINX
+FROM nginx:stable-alpine AS stage-1
 
 RUN apk add --no-cache curl
 
+# Supprime la config par défaut
+RUN rm /etc/nginx/conf.d/default.conf
+
+# Copie de ta config NGINX
+COPY nginx.conf /etc/nginx/conf.d/
+
+# Copie du build
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

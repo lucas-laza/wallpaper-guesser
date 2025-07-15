@@ -3,12 +3,13 @@ import { Link } from 'react-router-dom';
 import { ChevronRight } from 'lucide-react';
 import BackgroundImage from '../components/BackgroundImage';
 import GlassCard from '../components/GlassCard';
+import maroc from '../assets/maroc.jpeg';
 
 const Home = () => {
   const regions = ['World', 'Europe', 'Asia'];
 
   return (
-    <BackgroundImage src="src/assets/maroc.jpeg">
+    <BackgroundImage src={maroc}>
       <div className="min-h-screen flex flex-col justify-end p-6">
         <div className="flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
           
