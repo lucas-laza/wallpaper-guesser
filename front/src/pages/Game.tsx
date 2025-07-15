@@ -43,6 +43,7 @@ const Game = () => {
   const [partyId, setPartyId] = useState<number | null>(null);
   const [isReadyForNextRound, setIsReadyForNextRound] = useState(false);
   const [roundResults, setRoundResults] = useState<any[]>([]);
+  const [configuredTime, setConfiguredTime] = useState(60);
 
   const [syncState, setSyncState] = useState<SyncState>({
     isMultiplayer: false,
@@ -166,7 +167,7 @@ const Game = () => {
         console.log('🚀 [Game] Round started:', data);
         
         setCurrentRoundNumber(data.roundNumber);
-        setTimeLeft(60);
+        setTimeLeft(configuredTime);
         setGuessResult(null);
         setSelectedCountry('');
         setIsReadyForNextRound(false);
@@ -294,6 +295,9 @@ const Game = () => {
       setTotalRounds(activeGameInfo.totalRounds || 3);
       setCurrentRoundNumber(activeGameInfo.currentRound || 1);
       
+      const gameTime = activeGameInfo.time || 60;
+      setConfiguredTime(gameTime);
+      
       const isMultiplayer = activeGameInfo.isMultiplayer || (activeGameInfo.totalPlayers && activeGameInfo.totalPlayers > 1);
       
       let resolvedPartyId = activeGameInfo.partyId;
@@ -363,7 +367,7 @@ const Game = () => {
 
       if (activeGameInfo.roundData) {
         setCurrentRound(activeGameInfo.roundData);
-        setTimeLeft(activeGameInfo.time || 60);
+        setTimeLeft(activeGameInfo.time || gameTime);
         
         if (activeGameInfo.roundData.guesses > 0) {
           setGuessResult({
@@ -395,7 +399,7 @@ const Game = () => {
       setError('');
       const round = await getRound(parseInt(gameId!), roundNumber);
       setCurrentRound(round);
-      setTimeLeft(60);
+      setTimeLeft(configuredTime);
       setGuessResult(null);
       setSelectedCountry('');
     } catch (err: any) {
